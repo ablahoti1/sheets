@@ -31,29 +31,70 @@
           spellcheck="false"
           @blur="onTitleBlur"
         />
-        <!-- Save status: only shown for new unsaved docs or on error -->
-        <Badge
-          v-if="props.id === 'new' && isDirty"
-          theme="red"
-          variant="solid"
-          size="md"
-          label="UNSAVED — CLICK SAVE"
-          class="sn-unsaved-cta"
-          @click="onSave"
-        />
-        <Badge v-else-if="isSaving"                 theme="gray"   variant="subtle" size="sm" label="Saving…" />
-        <Badge v-else-if="justSaved"                theme="green"  variant="subtle" size="sm" label="Saved" />
+        <!-- Save status — muted inline text; never competes with the title -->
+        <span v-if="isSaving" class="sn-save-status">
+          <FeatherIcon name="loader" class="sn-save-icon sn-save-spin" />
+          Saving…
+        </span>
+        <span v-else-if="justSaved" class="sn-save-status">
+          <FeatherIcon name="check" class="sn-save-icon" />
+          Saved
+        </span>
         <Badge v-if="saveError" theme="red" variant="subtle" size="sm" :label="saveError" :tooltip="saveError" />
       </div>
       <div class="sn-topbar-right">
+        <Dropdown :options="fileDropdownOptions" placement="right">
+          <template #default="{ open }">
+            <Button :variant="open ? 'subtle' : 'ghost'" size="sm" iconLeft="file-text" iconRight="chevron-down" label="File" tooltip="Import / export" />
+          </template>
+        </Dropdown>
+        <input ref="csvInputRef"  type="file" accept=".csv"                   style="display:none" @change="importCSV" />
+        <input ref="xlsxInputRef" type="file" accept=".xlsx,.xls,.xlsm,.ods"  style="display:none" @change="importXLSX" />
+        <span class="sn-topbar-divider" aria-hidden="true" />
+        <Button variant="ghost" size="sm" icon="lucide-message-square" tooltip="Insert/edit note (Shift+F2)" @click="openCommentPanel" />
+        <!-- Variant flips to "subtle" while the panel is open so the trigger
+             reads as toggled, matching Frappe UI's standard toggle pattern. -->
+        <Button :variant="vhOpen ? 'subtle' : 'ghost'"
+                size="sm" icon="clock"
+                tooltip="Version history"
+                @click="vhOpen ? closeVersionHistory() : openVersionHistory()" />
         <Button variant="ghost" size="sm" icon="help-circle" tooltip="Keyboard shortcuts (?)" @click="showShortcutsHelp = true" />
-        <Avatar :label="userInitial" size="md" :tooltip="userEmail" />
+        <span class="sn-topbar-divider" aria-hidden="true" />
+        <!-- Presence avatars — other users currently viewing this sheet -->
+        <div v-if="presentUsers.length" class="sn-presence">
+          <Avatar
+            v-for="u in presentUsers.slice(0, 3)"
+            :key="u.user"
+            :label="u.initials"
+            :image="u.user_image || undefined"
+            size="sm"
+            :tooltip="u.full_name"
+            class="sn-presence-avatar"
+          />
+          <span
+            v-if="presentUsers.length > 3"
+            class="sn-presence-more"
+            :title="`${presentUsers.length - 3} more people`"
+          >+{{ presentUsers.length - 3 }}</span>
+        </div>
+        <!-- Share -->
+        <Button
+          variant="ghost"
+          size="sm"
+          icon="share-2"
+          :label="shareCount > 0 ? `Share · ${shareCount}` : 'Share'"
+          tooltip="Share this spreadsheet"
+          @click="shareOpen = true"
+        />
+        <span class="sn-topbar-divider" aria-hidden="true" />
+        <Avatar :label="userInitial" size="sm" :tooltip="userEmail" />
       </div>
     </div>
 
     <!-- Bar 2 · Formula bar -->
     <div class="sn-formula-bar">
-      <span class="sn-cell-ref">{{ activeCell }}</span>
+      <span class="sn-cell-ref" :title="`Active cell ${activeCell}`">{{ activeCell }}</span>
+      <span class="sn-fx-label" aria-hidden="true">fx</span>
       <div class="sn-formula-wrap">
         <input
           ref="formulaInputRef"
@@ -66,83 +107,63 @@
           spellcheck="false"
           autocomplete="off"
         />
-        <div v-if="acVisible" class="sn-ac-list">
+        <div v-if="acVisible" class="sn-ac-list" :class="{ 'sn-ac-list--up': acUp }">
           <div
-            v-for="(fn, i) in acItems"
-            :key="fn"
+            v-for="(item, i) in acItems"
+            :key="item.name + item.kind"
             class="sn-ac-item"
             :class="{ active: i === acIdx }"
-            @mousedown.prevent="commitAc(fn)"
+            @mousedown.prevent="commitAc(item)"
           >
-            <span class="sn-ac-name">{{ fn }}</span>
-            <span class="sn-ac-sig">{{ AC_FUNS[fn] }}</span>
+            <span class="sn-ac-name">{{ item.name }}</span>
+            <span v-if="item.kind === 'fn'"    class="sn-ac-sig">{{ AC_FUNS[item.name] }}</span>
+            <span v-else                        class="sn-ac-badge">sheet</span>
           </div>
         </div>
-      </div>
-      <div class="sn-fbar-actions">
-        <Dropdown :options="csvDropdownOptions" placement="right">
-          <template #default="{ open }">
-            <Button :variant="open ? 'subtle' : 'outline'" size="sm" iconLeft="file-text" iconRight="chevron-down" label="CSV" tooltip="Import / export CSV" />
-          </template>
-        </Dropdown>
-        <input ref="csvInputRef" type="file" accept=".csv" style="display:none" @change="importCSV" />
-        <!-- For new/unsaved docs show Save button; existing docs auto-save -->
-        <Button v-if="props.id === 'new'" variant="solid" size="sm" :loading="isSaving" @click="onSave">Save</Button>
       </div>
     </div>
 
     <!-- Bar 3 · Formatting toolbar -->
     <div class="sn-toolbar">
-      <FormControl
-        type="select"
-        size="sm"
-        :model-value="activeNumberFormatType"
-        :options="NUMBER_FORMAT_OPTIONS"
-        @update:model-value="onNumberFormatChange"
-      />
+
+      <!-- Number format -->
+      <FormControl type="select" size="sm" :model-value="activeNumberFormatType" :options="NUMBER_FORMAT_OPTIONS" @update:model-value="onNumberFormatChange" />
+      <Button :variant="activeNumberFormatType === 'currency'   ? 'subtle' : 'ghost'" size="sm" label="$" tooltip="Currency"   @click="toggleNumberFmt('currency')" />
+      <Button :variant="activeNumberFormatType === 'percentage' ? 'subtle' : 'ghost'" size="sm" label="%" tooltip="Percentage" @click="toggleNumberFmt('percentage')" />
+      <Button :variant="activeNumberFormatType === 'number'     ? 'subtle' : 'ghost'" size="sm" label="," tooltip="Thousands separator" @click="toggleNumberFmt('number')" />
       <div class="sn-tool-extra">
         <Button variant="ghost" size="sm" icon="lucide-trending-down" tooltip="Decrease decimal places" @click="adjustDecimals(-1)" />
         <Button variant="ghost" size="sm" icon="lucide-trending-up"   tooltip="Increase decimal places" @click="adjustDecimals(+1)" />
-        <div class="sn-vr" />
-
-        <Dropdown :options="fontFamilyDropdownOptions" placement="left" class="sn-font-family">
-          <template #default="{ open }">
-            <Button :variant="open ? 'subtle' : 'ghost'" size="sm" iconRight="chevron-down" :label="activeFontFamilyLabel" tooltip="Font family" />
-          </template>
-        </Dropdown>
-        <FormControl
-          type="number"
-          size="sm"
-          class="sn-font-size-input"
-          :model-value="activeFormat.fontSize || 13"
-          :min="8"
-          :max="72"
-          @change="onFontSizeInput"
-          @keydown.enter="onFontSizeInput"
-        />
-        <div class="sn-vr" />
       </div>
 
-      <Button :variant="activeFormat.bold          ? 'subtle' : 'ghost'" size="sm" icon="bold"           tooltip="Bold (Ctrl+B)"               @click="toggleFmt('bold')" />
-      <Button :variant="activeFormat.italic        ? 'subtle' : 'ghost'" size="sm" icon="italic"         tooltip="Italic (Ctrl+I)"             @click="toggleFmt('italic')" />
-      <Button :variant="activeFormat.underline     ? 'subtle' : 'ghost'" size="sm" icon="underline"      tooltip="Underline (Ctrl+U)"          @click="toggleFmt('underline')" />
+      <div class="sn-vr" />
+
+      <!-- Font -->
+      <Dropdown :options="fontFamilyDropdownOptions" placement="left" class="sn-font-family">
+        <template #default="{ open }">
+          <Button :variant="open ? 'subtle' : 'ghost'" size="sm" iconRight="chevron-down" :label="activeFontFamilyLabel" tooltip="Font family" />
+        </template>
+      </Dropdown>
+      <TextInput type="number" size="sm" class="sn-font-size-input" :model-value="activeFormat.fontSize || 13" min="8" max="72" @change="onFontSizeInput" @keydown.enter.prevent="onFontSizeInput" />
+
+      <div class="sn-vr" />
+
+      <!-- Style -->
+      <Button :variant="activeFormat.bold        ? 'subtle' : 'ghost'" size="sm" icon="bold"                tooltip="Bold (Ctrl+B)"             @click="toggleFmt('bold')" />
+      <Button :variant="activeFormat.italic      ? 'subtle' : 'ghost'" size="sm" icon="italic"              tooltip="Italic (Ctrl+I)"           @click="toggleFmt('italic')" />
+      <Button :variant="activeFormat.underline   ? 'subtle' : 'ghost'" size="sm" icon="underline"           tooltip="Underline (Ctrl+U)"        @click="toggleFmt('underline')" />
       <div class="sn-tool-extra">
         <Button :variant="activeFormat.strikethrough ? 'subtle' : 'ghost'" size="sm" icon="lucide-strikethrough" tooltip="Strikethrough (Ctrl+Shift+X)" @click="toggleFmt('strikethrough')" />
       </div>
+
       <div class="sn-vr" />
 
-      <Button :variant="activeFormat.align === 'left'   ? 'subtle' : 'ghost'" size="sm" icon="align-left"   tooltip="Align left"   @click="setAlign('left')" />
-      <Button :variant="activeFormat.align === 'center' ? 'subtle' : 'ghost'" size="sm" icon="align-center" tooltip="Align center" @click="setAlign('center')" />
-      <Button :variant="activeFormat.align === 'right'  ? 'subtle' : 'ghost'" size="sm" icon="align-right"  tooltip="Align right"  @click="setAlign('right')" />
-      <div class="sn-vr" />
-
-      <div class="sn-tool-extra">
-        <Button :variant="activeFormat.valign === 'top'                                            ? 'subtle' : 'ghost'" size="sm" icon="lucide-align-start-horizontal"  tooltip="Align top"    @click="setValign('top')" />
-        <Button :variant="(activeFormat.valign === 'middle' || activeFormat.valign === undefined) ? 'subtle' : 'ghost'" size="sm" icon="lucide-align-center-horizontal" tooltip="Align middle" @click="setValign('middle')" />
-        <Button :variant="activeFormat.valign === 'bottom'                                         ? 'subtle' : 'ghost'" size="sm" icon="lucide-align-end-horizontal"    tooltip="Align bottom" @click="setValign('bottom')" />
-        <div class="sn-vr" />
-      </div>
-
+      <!-- Align + Color -->
+      <Dropdown :options="alignDropdownOptions" placement="bottom">
+        <template #default="{ open }">
+          <Button :variant="open ? 'subtle' : 'ghost'" size="sm" :icon="hAlignIcon" tooltip="Alignment" />
+        </template>
+      </Dropdown>
       <label class="sn-swatch-btn" title="Text colour">
         <FeatherIcon name="type" class="sn-swatch-glyph" />
         <span class="sn-swatch-underline" :style="{ background: activeFormat.color || '#171717' }"></span>
@@ -153,45 +174,93 @@
         <span class="sn-swatch-underline sn-swatch-fill" :style="{ background: activeFormat.backgroundColor || '#ffffff' }"></span>
         <input type="color" :value="activeFormat.backgroundColor || '#ffffff'" @input="setColor('backgroundColor', $event.target.value)" />
       </label>
+
       <div class="sn-vr" />
 
+      <!-- Undo / Redo -->
       <Button variant="ghost" size="sm" icon="corner-up-left"  tooltip="Undo (Ctrl+Z)" :disabled="!canUndo" @click="undo" />
       <Button variant="ghost" size="sm" icon="corner-up-right" tooltip="Redo (Ctrl+Y)" :disabled="!canRedo" @click="redo" />
+
       <div class="sn-vr" />
 
+      <!-- Extra tools (visible at wide widths; hidden at narrow — overflow via ···) -->
       <div class="sn-tool-extra">
-        <Button variant="ghost" size="sm" icon="lucide-eraser" tooltip="Clear formatting" @click="clearFormatting" />
+        <Button :variant="isPaintingFormat ? 'subtle' : 'ghost'" size="sm" icon="lucide-paint-roller"  tooltip="Format painter"             @click="toggleFormatPainter" />
+        <Button variant="ghost"                                   size="sm" icon="lucide-eraser"         tooltip="Clear formatting"           @click="clearFormatting" />
         <div class="sn-vr" />
-
-        <Button :variant="showSortFilter        ? 'subtle' : 'ghost'" size="sm" iconLeft="filter"            label="Filter" tooltip="Toggle filter row" @click="showSortFilter = !showSortFilter" />
+        <Button :variant="showSortFilter ? 'subtle' : 'ghost'"   size="sm" icon="filter"               tooltip="Toggle filter"              @click="showSortFilter = !showSortFilter" />
         <div class="sn-vr" />
-        <Button :variant="activeFormat.wrapText ? 'subtle' : 'ghost'" size="sm" iconLeft="corner-down-left" label="Wrap"   tooltip="Wrap text"         @click="toggleFmt('wrapText')" />
+        <Button :variant="activeFormat.wrapText ? 'subtle' : 'ghost'" size="sm" icon="corner-down-left" tooltip="Wrap text"                @click="toggleWrap" />
         <div class="sn-vr" />
-
-        <!-- Borders dropdown -->
-        <Dropdown :options="borderDropdownOptions" placement="left">
+        <Button variant="ghost" size="sm" icon="lucide-blend"    tooltip="Conditional formatting"      @click="openCfDialog(null)" />
+        <Button variant="ghost" size="sm" icon="lucide-link"     tooltip="Insert hyperlink (Ctrl+L)"   @click="openHyperlinkDialog" />
+        <div class="sn-vr" />
+        <Dropdown :options="borderDropdownOptions" placement="bottom">
           <template #default="{ open }">
-            <Button :variant="open ? 'subtle' : 'ghost'" size="sm" iconLeft="grid" label="Borders" tooltip="Cell borders" />
+            <Button :variant="open ? 'subtle' : 'ghost'" size="sm" icon="lucide-layout-grid" tooltip="Borders" />
           </template>
         </Dropdown>
-
-        <!-- Merge button -->
-        <Button variant="ghost" size="sm" iconLeft="maximize-2" label="Merge" tooltip="Merge / unmerge cells" @click="toggleMerge" />
+        <Button variant="ghost" size="sm" icon="maximize-2" tooltip="Merge / unmerge cells" @click="toggleMerge" />
       </div>
 
-      <!-- Overflow "more" dropdown — surfaces extras when toolbar is collapsed at narrow widths -->
+      <!-- More -->
       <div class="sn-tool-more">
         <Dropdown :options="moreToolbarOptions" placement="left">
           <template #default="{ open }">
-            <Button :variant="open ? 'subtle' : 'ghost'" size="sm" iconLeft="more-horizontal" tooltip="More" />
+            <Button :variant="open ? 'subtle' : 'ghost'" size="sm" icon="more-horizontal" tooltip="More" />
           </template>
         </Dropdown>
       </div>
     </div>
 
+
+    <!-- Version preview banner — only when previewing -->
+    <VersionPreviewBanner
+      :open="!!vhActive"
+      :version="vhVersions.find(v => v.name === vhActive)"
+      :restoring="vhRestoring"
+      :diff="vhDiff"
+      :step-index="vhStepIdx"
+      @restore="restorePreview"
+      @exit="exitPreview"
+      @name="nameCurrentPreview"
+      @step="stepPreviewDiff"
+    />
+
     <!-- Canvas grid + filter overlay -->
-    <div ref="gridWrapRef" class="sn-grid-wrap">
+    <div ref="gridWrapRef" class="sn-grid-wrap"
+         :class="{ 'sn-painting-format': isPaintingFormat, 'sn-preview-locked': !!vhActive }">
       <canvas ref="canvasRef" />
+
+      <VersionHistory
+        :open="vhOpen"
+        :versions="vhVersions"
+        :loading="vhLoading"
+        :error="vhError"
+        :active-version="vhActive"
+        @close="closeVersionHistory"
+        @select="previewVersion"
+        @name="nameVersionInline"
+        @copy="makeACopyInline"
+        @restore="restoreVersionInline"
+      />
+
+      <CellHistoryPopover
+        v-model="cellHistory.open"
+        :cell-ref="cellHistory.cell"
+        :entries="cellHistory.entries"
+        :loading="cellHistory.loading"
+        :error="cellHistory.error"
+      />
+
+      <SplitTextPopover
+        :open="splitText.open"
+        :anchor="splitText.anchor"
+        :selected="splitText.choice"
+        @choose="onSplitChoose"
+        @apply="onSplitApply"
+        @cancel="onSplitCancel"
+      />
 
       <!-- Filter chevrons on row 0 (the user's header row of data) -->
       <div v-if="showSortFilter" class="sn-filter-overlay">
@@ -206,6 +275,26 @@
           <FeatherIcon name="chevron-down" class="sn-filter-btn-icon" />
         </button>
       </div>
+
+      <!-- Remote cursor overlays — one per peer on the same sub-sheet -->
+      <div
+        v-for="cur in visibleRemoteCursors"
+        :key="cur.user"
+        class="sn-remote-cursor"
+        :style="cur.style"
+        :title="cur.fullName"
+      >
+        <span class="sn-remote-cursor-label">{{ cur.initials }}</span>
+      </div>
+
+      <!-- Pivot FAB — floats below the Grand Total row, like Google Sheets -->
+      <Dropdown v-if="activePivotConfig && pivotFabStyle" :options="pivotBannerMenuOptions" placement="top-start">
+        <template #default="{ open }">
+          <button class="sn-pivot-fab" :class="{ open }" :style="pivotFabStyle" title="Pivot table options">
+            <FeatherIcon name="edit-2" class="sn-pivot-fab-icon" />
+          </button>
+        </template>
+      </Dropdown>
 
       <!-- Inline filter panel -->
       <div v-if="filterPanel.open" class="sn-filter-panel" :style="filterPanel.style">
@@ -246,12 +335,16 @@
 
     <!-- Bottom · sheet tabs + selection stats -->
     <div class="sn-bottom">
-      <div class="sn-tabs">
+      <div class="sn-tabs-track">
         <div
           v-for="name in sheetNames"
           :key="name"
-          class="sn-tab-wrap"
-          :class="{ 'sn-tab-drag-over': tabDragOver === name && tabDragName !== name }"
+          class="sn-tab"
+          :class="{
+            'sn-tab--active':   name === currentSheet,
+            'sn-tab--pivot':    isPivotSheet(name),
+            'sn-tab-drag-over': tabDragOver === name && tabDragName !== name,
+          }"
           draggable="true"
           @dragstart="onTabDragStart($event, name)"
           @dragend="onTabDragEnd"
@@ -259,16 +352,27 @@
           @drop.prevent="onTabDrop($event, name)"
         >
           <Button
-            :variant="name === currentSheet ? 'subtle' : 'ghost'"
+            variant="ghost"
             size="sm"
+            :iconLeft="isPivotSheet(name) ? 'layout' : undefined"
             :label="name"
+            class="sn-tab-btn"
             @click="switchSheet(name)"
-            @contextmenu.prevent="openTabMenu($event, name)"
             @dblclick="openRenameDialog(name)"
+            @contextmenu.prevent="openTabMenu($event, name)"
+          />
+          <Button
+            variant="ghost"
+            size="sm"
+            icon="chevron-down"
+            class="sn-tab-chevron"
+            @click.stop="openTabMenu($event, name)"
           />
         </div>
-        <Button variant="ghost" size="sm" icon="plus" tooltip="Add sheet" @click="addSheet" />
+
+        <Button variant="ghost" size="sm" icon="plus" class="sn-tab-add" tooltip="Add sheet" @click="addSheet" />
       </div>
+
       <div v-if="selectionStats" class="sn-stats">
         <span v-if="selectionStats.count > 0">Count: {{ selectionStats.count }}</span>
         <span v-if="selectionStats.sum !== null">Sum: {{ formatStat(selectionStats.sum) }}</span>
@@ -277,7 +381,7 @@
     </div>
 
     <!-- Sheet-tab context menu (rename / duplicate / delete) -->
-    <div v-if="tabMenu.open" class="sn-ctx-menu" :style="{ left: tabMenu.x + 'px', top: tabMenu.y + 'px' }">
+    <div v-if="tabMenu.open" class="sn-ctx-menu" :style="{ left: tabMenu.x + 'px', bottom: tabMenu.bottom + 'px' }">
       <Button variant="ghost" size="sm" iconLeft="edit-2"  label="Rename"    @click="openRenameDialog(tabMenu.name)" />
       <Button variant="ghost" size="sm" iconLeft="copy"    label="Duplicate" @click="doDuplicateSheet(tabMenu.name)" />
       <Button
@@ -293,7 +397,7 @@
     <!-- Rename sheet dialog -->
     <Dialog v-model="showRenameDialog" :options="{ title: 'Rename sheet', size: 'sm' }">
       <template #body-content>
-        <FormControl v-model="renameValue" label="New name" placeholder="Sheet name" @keydown.enter="confirmRename" />
+        <FormControl ref="renameInputRef" v-model="renameValue" label="New name" placeholder="Sheet name" @keydown.enter="confirmRename" />
         <p v-if="renameError" class="sn-rename-err">{{ renameError }}</p>
       </template>
       <template #actions>
@@ -303,7 +407,10 @@
     </Dialog>
 
     <!-- Right-click context menu (cursor-anchored; uses Frappe UI Buttons internally) -->
-    <div v-if="contextMenu.open" class="sn-ctx-menu" :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }">
+    <div v-if="contextMenu.open" class="sn-ctx-menu"
+         :style="contextMenu.useBottom
+           ? { left: contextMenu.x + 'px', bottom: contextMenu.bottom + 'px' }
+           : { left: contextMenu.x + 'px', top:    contextMenu.y      + 'px' }">
 
       <!-- Column-header menu -->
       <template v-if="contextMenu.mode === 'colHeader'">
@@ -353,20 +460,36 @@
         <Button v-if="freezeRows > 0" variant="ghost" size="sm" iconLeft="unlock" label="Unfreeze rows" @click="doUnfreezeRows()" />
         <Button variant="ghost" size="sm" iconLeft="lock"        label="Freeze cols to here"  @click="doFreezeCol()" />
         <Button v-if="freezeCols > 0" variant="ghost" size="sm" iconLeft="unlock" label="Unfreeze cols" @click="doUnfreezeCols()" />
+        <hr class="sn-ctx-sep" />
+        <Button variant="ghost" size="sm" iconLeft="check-square"   label="Data validation…" @click="contextMenu.open=false; openValidationDialog()" />
+        <Button variant="ghost" size="sm" iconLeft="blend"          label="Conditional format…" @click="contextMenu.open=false; openCfDialog(null)" />
+        <hr class="sn-ctx-sep" />
+        <Button variant="ghost" size="sm" iconLeft="columns"        label="Split text to columns" @click="doSplitTextToColumns()" />
+        <hr class="sn-ctx-sep" />
+        <Button variant="ghost" size="sm" iconLeft="layout"         label="Insert pivot table…"   @click="openPivotDialog()" />
       </template>
 
     </div>
 
-    <!-- Save-as dialog -->
-    <Dialog v-model="showSaveDialog" :options="{ title: 'Save Spreadsheet', size: 'sm' }">
-      <template #body-content>
-        <FormControl v-model="saveTitle" label="Title" placeholder="Untitled Spreadsheet" @keydown.enter="confirmSave" />
-      </template>
-      <template #actions>
-        <Button variant="solid" :loading="isSaving" @click="confirmSave">Save</Button>
-        <Button @click="showSaveDialog = false">Cancel</Button>
-      </template>
-    </Dialog>
+    <!-- Pivot dialog -->
+    <PivotDialog
+      v-model="pivotDialogOpen"
+      :sheet="sheet"
+      :current-sheet="currentSheet"
+      :initial-range="pivotInitialRange"
+      :pivot-id="pivotEditId"
+      :existing-config="pivotEditConfig"
+      @confirm="onPivotConfirm"
+    />
+
+    <!-- Share dialog -->
+    <ShareDialog
+      v-model="shareOpen"
+      :sheet-id="props.id"
+      :sheet-title="currentTitle"
+      :owner-id="userEmail"
+      @shares-changed="shareCount = $event"
+    />
 
     <!-- Find & Replace panel -->
     <FindReplace
@@ -388,13 +511,80 @@
     <!-- Hyperlink dialog (Ctrl+L) — stores fmt.hyperlink on the active cell -->
     <Dialog v-model="showHyperlinkDialog" :options="{ title: 'Insert hyperlink', size: 'sm' }">
       <template #body-content>
-        <FormControl v-model="hyperlinkText" label="Display text" placeholder="Click here" />
-        <FormControl v-model="hyperlinkUrl"  label="Link URL"      placeholder="https://example.com" class="sn-hl-url" @keydown.enter="confirmHyperlink" />
+        <div class="sn-form-stack">
+          <FormControl v-model="hyperlinkText" label="Display text" placeholder="Click here" />
+          <FormControl v-model="hyperlinkUrl"  label="Link URL" placeholder="https://example.com" @keydown.enter="confirmHyperlink" />
+        </div>
       </template>
       <template #actions>
         <Button v-if="hasActiveHyperlink" theme="red" @click="removeHyperlink">Remove</Button>
         <Button variant="solid" @click="confirmHyperlink">Apply</Button>
         <Button @click="showHyperlinkDialog = false">Cancel</Button>
+      </template>
+    </Dialog>
+
+    <!-- Data validation dialog -->
+    <Dialog v-model="validationDialog.open" :options="{ title: 'Data validation', size: 'sm' }">
+      <template #body-content>
+        <div class="sn-form-stack">
+          <!-- Type -->
+          <FormControl type="select" label="Type" v-model="validationDialog.type"
+            :options="[
+              { label: 'List of items',  value: 'list' },
+              { label: 'Number',         value: 'number' },
+              { label: 'Text length',    value: 'text_length' },
+            ]"
+          />
+
+          <!-- List -->
+          <FormControl v-if="validationDialog.type === 'list'"
+            v-model="validationDialog.listRaw"
+            label="Items (comma-separated)"
+            placeholder="Yes, No, Maybe"
+          />
+
+          <!-- Operator (number / text_length) -->
+          <FormControl v-if="validationDialog.type !== 'list'"
+            type="select" label="Condition" v-model="validationDialog.operator"
+            :options="[
+              { label: 'Between',             value: 'between' },
+              { label: 'Not between',         value: 'not_between' },
+              { label: 'Greater than',        value: 'gt' },
+              { label: 'Greater than or equal', value: 'gte' },
+              { label: 'Less than',           value: 'lt' },
+              { label: 'Less than or equal',  value: 'lte' },
+              { label: 'Equal to',            value: 'eq' },
+              { label: 'Not equal to',        value: 'neq' },
+            ]"
+          />
+
+          <!-- Values -->
+          <div v-if="validationDialog.type !== 'list'" class="sn-vd-vals">
+            <FormControl
+              v-model="validationDialog.val1"
+              type="number"
+              :label="['between','not_between'].includes(validationDialog.operator) ? 'Min' : 'Value'"
+            />
+            <FormControl
+              v-if="['between','not_between'].includes(validationDialog.operator)"
+              v-model="validationDialog.val2"
+              type="number"
+              label="Max"
+            />
+          </div>
+
+          <!-- Custom error message -->
+          <FormControl
+            v-model="validationDialog.message"
+            label="Error message (optional)"
+            placeholder="This value is not allowed"
+          />
+        </div>
+      </template>
+      <template #actions>
+        <Button variant="solid" @click="confirmValidation">Apply</Button>
+        <Button variant="ghost" theme="red" @click="removeValidation">Remove rule</Button>
+        <Button @click="validationDialog.open = false">Cancel</Button>
       </template>
     </Dialog>
 
@@ -437,24 +627,103 @@
       </template>
     </Dialog>
 
+    <!-- Comment panel (floating near cell) -->
+    <div v-if="commentPanel.open" class="sn-comment-panel"
+         :style="{ left: commentPanel.x + 'px', top: commentPanel.y + 'px' }">
+      <div class="sn-comment-header">
+        <span class="sn-comment-title">Note</span>
+        <Button variant="ghost" size="sm" icon="x" @click="commentPanel.open = false" />
+      </div>
+      <textarea class="sn-comment-ta" v-model="commentPanel.text" rows="4" placeholder="Add a note…" @blur="saveComment" />
+      <div class="sn-comment-actions">
+        <Button size="sm" variant="solid" @click="saveComment">Save</Button>
+        <Button size="sm" variant="ghost" theme="red" @click="deleteComment">Delete</Button>
+      </div>
+    </div>
+
+    <!-- Validation dropdown panel -->
+    <div v-if="dropdownPanel.open" class="sn-dropdown-panel"
+         :style="{ left: dropdownPanel.x + 'px', top: dropdownPanel.y + 'px', minWidth: dropdownPanel.w + 'px' }">
+      <div v-for="opt in dropdownPanel.options" :key="opt"
+           class="sn-dropdown-opt" @mousedown.prevent="pickDropdownOption(opt)">
+        {{ opt }}
+      </div>
+    </div>
+
+    <!-- Conditional formatting dialog -->
+    <Dialog v-model="cfDialog.open" :options="{ title: 'Conditional formatting', size: 'sm' }">
+      <template #body-content>
+        <div class="sn-form-stack">
+          <FormControl type="select" label="Condition" v-model="cfDialog.condType" :options="CF_COND_OPTIONS" />
+          <FormControl v-if="!['empty','notempty'].includes(cfDialog.condType)"
+                       v-model="cfDialog.condValue" label="Value" placeholder="e.g. 0" />
+          <FormControl v-if="cfDialog.condType === 'between'"
+                       v-model="cfDialog.condValue2" label="And" placeholder="e.g. 100" />
+          <div class="sn-cf-fmt">
+            <label class="sn-swatch-btn" title="Text colour">
+              <FeatherIcon name="type" class="sn-swatch-glyph" />
+              <span class="sn-swatch-underline" :style="{ background: cfDialog.fmtColor || '#171717' }"></span>
+              <input type="color" :value="cfDialog.fmtColor || '#171717'" @input="cfDialog.fmtColor = $event.target.value" />
+            </label>
+            <label class="sn-swatch-btn" title="Fill colour">
+              <FeatherIcon name="droplet" class="sn-swatch-glyph" />
+              <span class="sn-swatch-underline sn-swatch-fill" :style="{ background: cfDialog.fmtBg || '#ffffff' }"></span>
+              <input type="color" :value="cfDialog.fmtBg || '#ffffff'" @input="cfDialog.fmtBg = $event.target.value" />
+            </label>
+            <span class="sn-cf-fmt-label">Apply to range: {{ cfRangeLabel }}</span>
+          </div>
+        </div>
+      </template>
+      <template #actions>
+        <Button v-if="cfDialog.editId !== null" theme="red" @click="deleteCfRule">Delete</Button>
+        <Button variant="solid" @click="saveCfRule">Apply</Button>
+        <Button @click="cfDialog.open = false">Cancel</Button>
+      </template>
+    </Dialog>
+
+
   </div>
 </template>
 
 <script setup>
 import { ref, reactive, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { createGrid }          from '../../canvas/index.js'
-import { colLabel, parseCellId } from '../../utils/cells.js'
+import { colLabel, parseCellId, cellId } from '../../utils/cells.js'
+import { computeFillDown, computeFillRight } from '../../engine/fill-series.js'
+import { detectSeries }                       from '../../engine/patterns/index.js'
+import { adjustFormula }                    from '../../engine/formula-adjust.js'
 import { createSheet }         from '../../engine/sheet.js'
 import { createHistory }       from '../../engine/history.js'
 import { createFormatsEngine } from '../../engine/formats.js'
 import { createMergeEngine }   from '../../engine/merge.js'
 import { createClipboard }     from '../../engine/clipboard.js'
 import { createSortFilter }    from '../../engine/sortFilter.js'
+import { createCommentsEngine }  from '../../engine/comments.js'
+import { createValidationEngine } from '../../engine/validation.js'
+import { createCondFormatEngine } from '../../engine/cond-format.js'
 import { useToolbar }          from './useToolbar.js'
 import { usePersistence }      from './usePersistence.js'
 import { useSheetTabs }        from './useSheetTabs.js'
+import { useFormulaAutocomplete, AC_FUNS } from './useFormulaAutocomplete.js'
+import { buildAlignOptions, buildBorderOptions, buildMoreToolbarOptions } from './toolbar.config.js'
+import { useContextMenu } from './useContextMenu.js'
+import { usePivotIntegration } from './usePivotIntegration.js'
+import { useShortcuts } from './useShortcuts.js'
+import { useCollaboration }    from './useCollaboration.js'
+import { useExportImport }     from './useExportImport.js'
+import { useVersionHistory }   from './useVersionHistory.js'
+import { useSplitText }        from './useSplitText.js'
+import { buildCommandGroups }  from './commandPalette.config.js'
 import FindReplace             from './FindReplace.vue'
-import { CommandPaletteItem, KeyboardShortcut } from 'frappe-ui'
+import VersionHistory          from './VersionHistory.vue'
+import VersionPreviewBanner    from './VersionPreviewBanner.vue'
+import CellHistoryPopover      from './CellHistoryPopover.vue'
+import SplitTextPopover        from './SplitTextPopover.vue'
+import ShareDialog             from './ShareDialog.vue'
+import PivotDialog             from './PivotDialog.vue'
+import { createPivotEngine } from '../../engine/pivot.js'
+import * as versionsApi        from '../../services/versions.js'
+import { KeyboardShortcut, TextInput } from 'frappe-ui'
 
 const props = defineProps({ id: { type: String, default: 'new' } })
 const emit  = defineEmits(['close', 'saved'])
@@ -472,19 +741,46 @@ const sheet = createSheet({
     grid?.setCell(id, displayed)
   },
 })
-const formats   = createFormatsEngine()
-const merge     = createMergeEngine()
-const history   = createHistory({
-  snapshot: () => ({ sheet: sheet.snapshot(), formats: formats.snapshot(), merge: merge.snapshot() }),
+const formats    = createFormatsEngine()
+const merge      = createMergeEngine()
+const sortFilter = createSortFilter(sheet)
+const comments   = createCommentsEngine()
+const validation = createValidationEngine()
+const condFormat = createCondFormatEngine()
+const clipboard  = createClipboard({ sheet, formats, condFormat, validation })
+const pivot      = createPivotEngine()
+
+// Single source of truth for "what does undo restore?". Every engine that
+// owns mutable state (sheet data, formats, merges, filters, comments,
+// validations, conditional formats) plus the canvas-side view state (column
+// widths, freeze, hidden rows/cols, zoom, total rows) is captured. Anything
+// not snapshotted here is invisible to undo — that was the bug behind
+// "filter doesn't undo".
+const history = createHistory({
+  snapshot() {
+    return {
+      sheet:      sheet.snapshot(),
+      formats:    formats.snapshot(),
+      merge:      merge.snapshot(),
+      sortFilter: sortFilter.snapshot(),
+      comments:   comments.snapshot(),
+      validation: validation.snapshot(),
+      condFormat: condFormat.snapshot(),
+      view:       grid?.viewSnapshot?.() ?? null,
+    }
+  },
   restore(snap) {
     formats.restore(snap.formats)
     sheet.restore(snap.sheet)
-    if (snap.merge) merge.restore(snap.merge)
-    // Caller (undo/redo) repopulates the canvas — no render here
+    if (snap.merge)      merge.restore(snap.merge)
+    if (snap.sortFilter) sortFilter.restore(snap.sortFilter)
+    if (snap.comments)   comments.restore(snap.comments)
+    if (snap.validation) validation.restore(snap.validation)
+    if (snap.condFormat) condFormat.restore(snap.condFormat)
+    if (snap.view && grid?.viewRestore) grid.viewRestore(snap.view)
+    // Caller (undo/redo) repopulates the canvas + reapplies hidden rows.
   },
 })
-const clipboard  = createClipboard({ sheet, formats })
-const sortFilter = createSortFilter(sheet)
 
 // ── Vue state ─────────────────────────────────────────────────────────────────
 
@@ -492,6 +788,7 @@ const canvasRef       = ref(null)
 const gridWrapRef     = ref(null)
 const formulaInputRef = ref(null)
 const csvInputRef     = ref(null)
+const xlsxInputRef    = ref(null)
 
 const activeCell        = ref('A1')
 const formulaValue      = ref('')
@@ -550,9 +847,39 @@ const SHORTCUT_GROUPS = [
     { label: 'Shortcut help',             combos: ['?'] },
   ]},
 ]
-const showSortFilter    = ref(false)
 const selectionStats    = ref(null)
 const isDirty           = ref(false)
+const isPaintingFormat  = ref(false)
+
+// ── Comment UI state ──────────────────────────────────────────────────────────
+const commentPanel  = reactive({ open: false, id: '', text: '', x: 0, y: 0 })
+
+// ── Dropdown (validation) UI state ────────────────────────────────────────────
+const dropdownPanel    = reactive({ open: false, id: '', options: [], x: 0, y: 0, w: 120 })
+const validationDialog = reactive({
+  open: false,
+  type:     'list',      // 'list' | 'number' | 'text_length'
+  operator: 'between',   // 'between' | 'not_between' | 'gt' | 'gte' | 'lt' | 'lte' | 'eq' | 'neq'
+  val1:     '',
+  val2:     '',
+  listRaw:  '',
+  message:  '',
+})
+
+// ── Conditional format dialog state ───────────────────────────────────────────
+const cfDialog = reactive({
+  open: false, editId: null,
+  range: { r0: 0, c0: 0, r1: 0, c1: 0 },
+  condType: 'gt', condValue: '', condValue2: '',
+  fmtColor: '', fmtBg: '',
+})
+
+
+
+const cellHistory = reactive({
+  open: false, cell: '', loading: false, error: '', entries: [],
+})
+
 const borderColor       = ref('#000000')
 const borderStyle       = ref('thin')
 const freezeRows        = ref(0)
@@ -600,110 +927,50 @@ const FILTER_OPERATOR_OPTIONS = [
   { label: 'Is not empty', value: 'notempty' },
 ]
 
-const csvDropdownOptions = [
-  { label: 'Export CSV', icon: 'download', onClick: () => exportCSV() },
-  { label: 'Import CSV', icon: 'upload',   onClick: () => triggerImport() },
-]
-
-const borderDropdownOptions = computed(() => [
-  { group: 'Apply to selection', items: [
-    { label: 'All borders',     icon: 'grid',         onClick: () => applyBorder('all') },
-    { label: 'Outside borders', icon: 'square',       onClick: () => applyBorder('outside') },
-    { label: 'Inner borders',   icon: 'plus',         onClick: () => applyBorder('inner') },
+const fileDropdownOptions = computed(() => [
+  { group: 'Export', items: [
+    { label: 'Export as CSV',  icon: 'download',  onClick: () => exportCSV() },
+    { label: 'Export as XLSX', icon: 'download',  onClick: () => exportXLSX() },
+    { label: 'Export as PDF',  icon: 'printer',   onClick: () => exportPDF() },
   ]},
-  { group: 'Single side', items: [
-    { label: 'Top border',    icon: 'arrow-up',    onClick: () => applyBorder('top') },
-    { label: 'Bottom border', icon: 'arrow-down',  onClick: () => applyBorder('bottom') },
-    { label: 'Left border',   icon: 'arrow-left',  onClick: () => applyBorder('left') },
-    { label: 'Right border',  icon: 'arrow-right', onClick: () => applyBorder('right') },
-  ]},
-  { group: 'Remove', items: [
-    { label: 'No border', icon: 'x-square', theme: 'red', onClick: () => applyBorder('none') },
+  { group: 'Import', items: [
+    { label: 'Import CSV',  icon: 'upload', onClick: () => csvInputRef.value?.click() },
+    { label: 'Import XLSX', icon: 'upload', onClick: () => xlsxInputRef.value?.click() },
   ]},
 ])
 
-// Mirrors the .sn-tool-extra buttons. Surfaced via the "More" overflow dropdown
-// when the toolbar is collapsed at narrow widths.
-const moreToolbarOptions = computed(() => [
-  { group: 'Numbers', items: [
-    { label: 'Decrease decimal places', icon: 'minus', onClick: () => adjustDecimals(-1) },
-    { label: 'Increase decimal places', icon: 'plus',  onClick: () => adjustDecimals(+1) },
-  ]},
-  { group: 'Text', items: [
-    { label: 'Strikethrough', icon: 'minus',           onClick: () => toggleFmt('strikethrough') },
-    { label: 'Wrap text',     icon: 'corner-down-left', onClick: () => toggleFmt('wrapText') },
-    { label: 'Align top',     icon: 'chevron-up',      onClick: () => setValign('top') },
-    { label: 'Align middle',  icon: 'minus',           onClick: () => setValign('middle') },
-    { label: 'Align bottom',  icon: 'chevron-down',    onClick: () => setValign('bottom') },
-    { label: 'Clear formatting', icon: 'x-circle',     onClick: () => clearFormatting() },
-  ]},
-  { group: 'Cells', items: [
-    { label: 'Merge / unmerge', icon: 'maximize-2', onClick: () => toggleMerge() },
-    { label: 'Toggle filter',   icon: 'filter',     onClick: () => { showSortFilter.value = !showSortFilter.value } },
-  ]},
-  { group: 'Borders', items: [
-    { label: 'All borders',     icon: 'grid',       onClick: () => applyBorder('all') },
-    { label: 'Outside borders', icon: 'square',     onClick: () => applyBorder('outside') },
-    { label: 'No border',       icon: 'x-square',   onClick: () => applyBorder('none') },
-  ]},
-  { group: 'View', items: [
-    { label: 'Zoom in',     icon: 'zoom-in',  onClick: () => zoomBy(+0.1) },
-    { label: 'Zoom out',    icon: 'zoom-out', onClick: () => zoomBy(-0.1) },
-    { label: 'Reset zoom',  icon: 'minimize', onClick: () => resetZoom() },
-  ]},
-])
-
-// Title input auto-sizes to content so there's no trailing whitespace
-const titleInputWidth = computed(() => {
-  const text = currentTitle.value || 'Untitled Spreadsheet'
-  return Math.max(80, Math.min(320, text.length * 8.5 + 24)) + 'px'
+const hAlignIcon = computed(() => {
+  if (activeFormat.value?.align === 'center') return 'align-center'
+  if (activeFormat.value?.align === 'right')  return 'align-right'
+  return 'align-left'
 })
 
-const AC_FUNS = {
-  ABS:'(number)', AND:'(logical1, ...)', AVERAGE:'(number1, ...)',
-  AVERAGEIF:'(range, criteria, [avg_range])', CEILING:'(number, significance)',
-  CHOOSE:'(index, value1, ...)', COLUMN:'([reference])', COLUMNS:'(array)',
-  CONCAT:'(text1, ...)', CONCATENATE:'(text1, ...)',
-  COUNT:'(value1, ...)', COUNTA:'(value1, ...)', COUNTBLANK:'(range)',
-  COUNTIF:'(range, criteria)', COUNTIFS:'(range1, criteria1, ...)',
-  DATE:'(year, month, day)', DAY:'(date)', EXP:'(number)',
-  FALSE:'()', FIND:'(find_text, within_text, [start])',
-  FLOOR:'(number, significance)', HLOOKUP:'(value, table, row, [range])',
-  HOUR:'(time)', IF:'(test, value_if_true, [value_if_false])',
-  IFERROR:'(value, value_if_error)', IFS:'(condition1, value1, ...)',
-  INDEX:'(array, row, [col])', INDIRECT:'(ref_text)',
-  INT:'(number)', ISBLANK:'(value)', ISERROR:'(value)',
-  ISNUMBER:'(value)', ISTEXT:'(value)',
-  LARGE:'(array, k)', LEFT:'(text, [num_chars])',
-  LEN:'(text)', LN:'(number)', LOG:'(number, [base])',
-  LOWER:'(text)', MATCH:'(value, array, [type])',
-  MAX:'(number1, ...)', MID:'(text, start, num_chars)',
-  MIN:'(number1, ...)', MINUTE:'(time)', MOD:'(number, divisor)',
-  MONTH:'(date)', NOT:'(logical)', NOW:'()',
-  OR:'(logical1, ...)', PI:'()', POWER:'(base, exponent)',
-  PRODUCT:'(number1, ...)', PROPER:'(text)',
-  RAND:'()', RANDBETWEEN:'(bottom, top)', RANK:'(number, ref, [order])',
-  REPLACE:'(text, start, num_chars, new_text)', REPT:'(text, times)',
-  RIGHT:'(text, [num_chars])', ROUND:'(number, digits)',
-  ROUNDDOWN:'(number, digits)', ROUNDUP:'(number, digits)',
-  ROW:'([reference])', ROWS:'(array)',
-  SEARCH:'(find_text, within_text, [start])',
-  SMALL:'(array, k)', SQRT:'(number)',
-  SUBSTITUTE:'(text, old, new, [instance])',
-  SUM:'(number1, ...)', SUMIF:'(range, criteria, [sum_range])',
-  SUMIFS:'(sum_range, range1, criteria1, ...)',
-  TEXT:'(value, format_text)', TEXTJOIN:'(delimiter, ignore_empty, text1, ...)',
-  TIME:'(hour, minute, second)', TODAY:'()', TRIM:'(text)', TRUE:'()',
-  UPPER:'(text)', VALUE:'(text)',
-  VLOOKUP:'(value, table, col_index, [range_lookup])',
-  WEEKDAY:'(date, [return_type])', YEAR:'(date)',
-}
-const acItems   = ref([])
-const acIdx     = ref(0)
-const acVisible = computed(() => acItems.value.length > 0)
+
+// Title input auto-sizes to content so there's no trailing whitespace.
+// Per-char width tracks the 15px/600 font in .sn-title-input.
+const titleInputWidth = computed(() => {
+  const text = currentTitle.value || 'Untitled Spreadsheet'
+  return Math.max(96, Math.min(360, text.length * 9 + 28)) + 'px'
+})
+
 
 const userEmail   = window.frappe?.session?.user || ''
 const userInitial = computed(() => (userEmail ? userEmail[0] : 'U').toUpperCase())
+
+// Collaboration — presence + sharing
+const shareOpen   = ref(false)
+const shareCount  = ref(0)   // explicit share count (excluding owner); updated by ShareDialog
+const { exportCSV, exportXLSX, exportPDF, importCSV, importXLSX } = useExportImport({
+  getSheet:        () => sheet,
+  getCurrentTitle: () => currentTitle.value,
+  getGrid:         () => grid,
+  queueOp:         _queueOp,
+  markEdited,
+  repopulateGrid:  _repopulateGrid,
+  syncFlags,
+  isDirty,
+  history,
+})
 
 const filterPanel = reactive({
   open: false, col: 0, operator: 'contains', value: '', style: {},
@@ -750,42 +1017,6 @@ function formatStat(n) {
   return Number.isInteger(n) ? n.toLocaleString() : parseFloat(n.toFixed(4)).toLocaleString()
 }
 
-// ── Formula autocomplete ──────────────────────────────────────────────────────
-
-function _acToken(value, cursor) {
-  if (!value || !value.startsWith('=')) return null
-  const before = value.slice(0, cursor)
-  const m = before.match(/(?:[=(+\-*/&^,])([A-Za-z][A-Za-z0-9_]*)$|^=([A-Za-z][A-Za-z0-9_]*)$/)
-  return m ? (m[1] || m[2]) : null
-}
-
-function updateAc(value, cursor) {
-  const tok = _acToken(value, cursor)
-  if (!tok) { acItems.value = []; return }
-  const up = tok.toUpperCase()
-  acItems.value = Object.keys(AC_FUNS).filter(n => n.startsWith(up)).sort().slice(0, 8)
-  acIdx.value = 0
-}
-
-function commitAc(name) {
-  const input = formulaInputRef.value
-  if (!input) return
-  const cursor = input.selectionStart, value = input.value
-  const before = value.slice(0, cursor)
-  const m = before.match(/(?:[=(+\-*/&^,])([A-Za-z][A-Za-z0-9_]*)$|^=([A-Za-z][A-Za-z0-9_]*)$/)
-  if (m) {
-    const tok = m[1] || m[2], tokStart = cursor - tok.length
-    const newVal = value.slice(0, tokStart) + name + '(' + value.slice(cursor)
-    formulaValue.value = newVal
-    nextTick(() => {
-      const pos = tokStart + name.length + 1
-      input.setSelectionRange(pos, pos)
-    })
-  }
-  acItems.value = []
-}
-
-function closeAc() { acItems.value = [] }
 
 // ── Number format helpers ─────────────────────────────────────────────────────
 
@@ -863,6 +1094,11 @@ function adjustDecimals(delta) {
 const { activeFormat, refreshActiveFormat, toggleFmt, setAlign, setValign, setColor, clearFormatting, getLastAction, recordAction } =
   useToolbar({ sheet, formats, getGrid: () => grid, history, selectionIds, syncFlags, markDirty: () => { isDirty.value = true } })
 
+// Toolbar dropdown configs that don't depend on pivot composable.
+function toggleSortFilter() { showSortFilter.value = !showSortFilter.value }
+const alignDropdownOptions  = buildAlignOptions({ setAlign, setValign })
+const borderDropdownOptions = buildBorderOptions({ applyBorder })
+
 // Maps the current cell's font-family string back to a short key so the
 // toolbar select shows e.g. "Inter" instead of the full CSS stack.
 const activeFontFamilyKey = computed(() => {
@@ -886,13 +1122,27 @@ const fontFamilyDropdownOptions = computed(() =>
 function repeatLast() {
   const last = getLastAction()
   if (!last) return
-  const handlers = { toggleFmt, setAlign, setValign, setColor, clearFormatting, adjustDecimals, adjustFontSize, setFontSize, setFontFamily }
+  const handlers = { toggleFmt, setAlign, setValign, setColor, clearFormatting, adjustDecimals, adjustFontSize, setFontSize, setFontFamily, toggleWrap }
   handlers[last.kind]?.(...last.args)
 }
 
-const { isSaving, showSaveDialog, saveTitle, saveError, loadSheet, openSaveDialog, confirmSave, saveExisting } =
+// Wrap text needs a row-height bump to actually be visible — toggleFmt alone
+// flips the format flag but the renderer's wrapped text gets clipped at the
+// fixed 24px row height. After the toggle, auto-fit every row in the
+// selection (only when wrapping ON; turning wrap OFF keeps the height since
+// the user may have manually grown the row).
+function toggleWrap() {
+  toggleFmt('wrapText')
+  if (!activeFormat.value?.wrapText) return
+  if (!grid) return
+  const { r0, r1 } = grid.getSelection()
+  for (let r = r0; r <= r1; r++) grid.autoFitRow(r)
+  recordAction?.('toggleWrap', [])
+}
+
+const { isSaving, saveError, loadSheet, autoCreate, saveExisting } =
   usePersistence({
-    sheet, formats, merge,
+    sheet, formats, merge, comments, validation, condFormat, sortFilter, pivot,
     getViewState:   () => grid?.viewSnapshot?.(),
     applyViewState: (s) => grid?.viewRestore?.(s),
     currentTitle, emit,
@@ -906,12 +1156,116 @@ const {
   deleteSheet:    _deleteSheet,
   reorderSheets,
   syncNames,
-} = useSheetTabs({ sheet, formats, getGrid: () => grid, activeCell, formulaValue, refreshActiveFormat, onSwitch: () => {
+} = useSheetTabs({ sheet, formats, extras: [comments, validation, condFormat, sortFilter], getGrid: () => grid, activeCell, formulaValue, refreshActiveFormat, onSwitch: () => {
+    filterPanel.open = false     // close any open filter popover so it doesn't carry stale state
     _repopulateGrid()
     grid?.setMarchingAnts(null); clipboard.clear(); clipboardHas.value = false
+    _applyHiddenRows()           // refresh filter-driven row hides for the new sheet
+    // Diff overlay is keyed by sub-sheet name — re-point at the new sheet
+    // so the highlight follows the user across tabs in preview mode.
+    if (vhActive.value) grid?.setActiveDiffSheet?.(sheet.getCurrentSheet())
   } })
 
-function addSheet() { _addSheet(); isDirty.value = true }
+// Formula autocomplete — placed here because sheetNames comes from useSheetTabs above.
+const { acItems, acIdx, acUp, acVisible, updateAc, commitAc, closeAc } =
+  useFormulaAutocomplete({ formulaInputRef, formulaValue, sheetNames })
+
+// Context menu — placed here because contextMenu is passed to usePivotIntegration below.
+const { contextMenu, tabMenu, openCanvasContextMenu: onCanvasContextMenu, openTabMenu } =
+  useContextMenu({ getGrid: () => grid })
+
+// renderVersion is defined here because usePivotIntegration reads it at call time.
+const renderVersion = ref(0)
+
+// Pivot integration — placed here because switchSheet/syncNames come from useSheetTabs above.
+const {
+  pivotDialogOpen, pivotInitialRange, pivotEditId, pivotEditConfig, pivotVersion,
+  activePivotConfig, pivotFabStyle, pivotBannerMenuOptions,
+  isPivotSheet, openPivotDialog, onPivotEdit, onPivotRefresh, onPivotDelete, onPivotConfirm,
+  recomputePivotsForSheet,
+} = usePivotIntegration({
+  pivot, sheet, currentSheet, renderVersion,
+  getGrid: () => grid,
+  contextMenu, switchSheet, syncNames,
+  history, isDirty, repopulateGrid: _repopulateGrid,
+})
+
+const moreToolbarOptions = buildMoreToolbarOptions({
+  toggleFmt, toggleWrap, toggleFormatPainter, clearFormatting,
+  adjustDecimals, openCfDialog, openHyperlinkDialog, toggleMerge,
+  toggleSortFilter, applyBorder, zoomBy, resetZoom, openPivotDialog,
+})
+
+// Collaboration — placed here because currentSheet comes from useSheetTabs above.
+const { presentUsers, remoteCursors, broadcastCellChange, broadcastBatchChange, broadcastCursor } =
+  useCollaboration({
+    sheetId:        computed(() => props.id),
+    currentSheet,
+    getSheet:       () => sheet,
+    repopulateGrid: _repopulateGrid,
+  })
+
+// Version history — placed after usePersistence (loadSheet) and useSheetTabs (switchSheet/syncNames).
+const {
+  vhOpen, vhVersions, vhLoading, vhError, vhActive, vhRestoring, vhDiff, vhStepIdx,
+  openVersionHistory, closeVersionHistory,
+  previewVersion, exitPreview, stepPreviewDiff,
+  restorePreview, nameCurrentPreview, nameVersionInline,
+  makeACopyInline, restoreVersionInline,
+} = useVersionHistory({
+  sheetId:        computed(() => props.id),
+  getSheet:       () => sheet,
+  getFormats:     () => formats,
+  getMerge:       () => merge,
+  getComments:    () => comments,
+  getValidation:  () => validation,
+  getCondFormat:  () => condFormat,
+  getSortFilter:  () => sortFilter,
+  getGrid:        () => grid,
+  currentTitle,
+  switchSheet,
+  syncNames,
+  repopulateGrid: _repopulateGrid,
+  syncViewMirrors: _syncViewMirrors,
+  loadSheet,
+  history,
+  activeCell,
+})
+
+// Split text — placed after currentSheet from useSheetTabs.
+const {
+  splitText,
+  doSplitTextToColumns,
+  onSplitChoose,
+  onSplitApply,
+  onSplitCancel,
+  revertSplitPreview: _revertSplitPreview,
+  closeSplit:         _closeSplit,
+} = useSplitText({
+  getSheet:       () => sheet,
+  getGrid:        () => grid,
+  contextMenu,
+  currentSheet,
+  queueOp:        _queueOp,
+  markEdited,
+  repopulateGrid: _repopulateGrid,
+  syncFlags,
+  captureRange:   _captureRange,
+  diffRefs:       _diffRefs,
+})
+
+// `showSortFilter` is the existing template/handler API; with ranged filters
+// it's now derived from "does this sheet have a filter range?".  Writing true
+// creates a filter on the current selection; writing false removes it.
+const showSortFilter = computed({
+  get() {
+    renderVersion.value
+    return sortFilter.hasFilter(currentSheet.value)
+  },
+  set(v) { v ? _createFilterOnSelection() : _removeFilter() },
+})
+
+function addSheet() { _addSheet(); history.push(); isDirty.value = true }
 
 // ── Sheet-tab drag-to-reorder ─────────────────────────────────────────────────
 const tabDragName = ref(null)
@@ -937,6 +1291,7 @@ function onTabDrop(e, target) {
   reorderSheets(next)
   tabDragOver.value = null
   tabDragName.value = null
+  history.push()
   isDirty.value = true
 }
 function onTabDragEnd() { tabDragName.value = null; tabDragOver.value = null }
@@ -956,39 +1311,190 @@ const showAddRows = computed(() => {
 function doAddMoreRows() {
   const n = Math.max(1, Math.min(10000, parseInt(addRowsCount.value, 10) || 1000))
   grid?.expandRows(n)
+  history.push()
   isDirty.value = true
 }
 
 // ── Filter overlay geometry ───────────────────────────────────────────────────
 
-const filterConfig = computed(() => sortFilter.getFilterConfig())
+const filterConfig = computed(() => {
+  renderVersion.value          // re-eval when canvas re-renders (e.g. filter apply)
+  return sortFilter.getFilterConfig(currentSheet.value)
+})
 
-// Bumped after every canvas render so the filter overlay tracks scroll/resize/freeze.
-const renderVersion = ref(0)
+const filterRange = computed(() => {
+  renderVersion.value
+  return sortFilter.getRange(currentSheet.value)
+})
 
-// Chevron buttons sit on the right edge of each visible row-0 cell — row 0
-// is the user's header row of data (the column letters A/B/C strip is the
-// SPREADSHEET header, separate from this).
+// Chevron buttons appear only on the header row of the active filter range —
+// at most one filter per sheet, scoped to its rectangle (Google-Sheets-style).
 const visibleFilterCols = computed(() => {
   renderVersion.value
-  if (!grid || !showSortFilter.value) return []
-  const row0 = grid.getRow0Rect()
-  const rects = grid.getColumnHeaderRects()
+  if (!grid || !filterRange.value) return []
+  const { r0, c0, c1 } = filterRange.value
+  const rowRect = grid.getRowRect(r0)
+  const rects   = grid.getColumnHeaderRects().filter(({ c }) => c >= c0 && c <= c1)
   const BTN = 16
   return rects.map(({ c, x, width }) => ({
     col: c,
     style: {
       left:   (x + width - BTN - 3) + 'px',
-      top:    (row0.y + (row0.height - BTN) / 2) + 'px',
+      top:    (rowRect.y + (rowRect.height - BTN) / 2) + 'px',
       width:  BTN + 'px',
       height: BTN + 'px',
     },
   }))
 })
 
+// Remote cursors for users on the same sheet — re-evaluated when the canvas renders
+// (renderVersion) or when remoteCursors updates.
+const visibleRemoteCursors = computed(() => {
+  renderVersion.value
+  if (!grid) return []
+  return [...remoteCursors.value.entries()]
+    .filter(([, cursor]) => cursor.subSheet === currentSheet.value)
+    .map(([user, cursor]) => {
+      const rect = grid.getCellRect?.(cursor.row, cursor.col)
+      if (!rect) return null
+      return { user, initials: cursor.initials, color: cursor.color, fullName: cursor.fullName,
+               style: { left: rect.x + 'px', top: rect.y + 'px',
+                        width: rect.width + 'px', height: rect.height + 'px',
+                        '--rc': cursor.color } }
+    })
+    .filter(Boolean)
+})
+
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 
-onMounted(async () => {
+// ── Fill handle helpers ───────────────────────────────────────────────────────
+// These close over module-level engine vars (sheet, formats, etc.) and the
+// module-level `grid` ref (set by _setupGridInstance before any fill fires).
+
+function _fillValidation(src, total, sn) {
+  const srcRows = src.r1 - src.r0 + 1, srcCols = src.c1 - src.c0 + 1
+  for (let r = total.r0; r <= total.r1; r++) {
+    for (let c = total.c0; c <= total.c1; c++) {
+      if (r >= src.r0 && r <= src.r1 && c >= src.c0 && c <= src.c1) continue
+      const srcR = src.r0 + ((r - src.r0 + srcRows) % srcRows)
+      const srcC = src.c0 + ((c - src.c0 + srcCols) % srcCols)
+      const rule = validation.get(cellId(srcR, srcC), sn)
+      if (rule) validation.set(cellId(r, c), rule, sn)
+    }
+  }
+}
+
+// _runFill modes: 'auto' | 'series' | 'copy' | 'format-only' | 'without-format'
+function _runFill(src, total, mode) {
+  const sheetName  = sheet.getCurrentSheet()
+  const fillBefore = _captureRange(total, sheetName)
+  if (mode === 'format-only') {
+    _fillFormatsOnly(src, total, sheetName)
+  } else {
+    const valueMode = mode === 'without-format' ? 'auto' : mode
+    _fillValues(src, total, sheetName, valueMode)
+    if (mode === 'without-format') _clearFormats(src, total, sheetName)
+  }
+  if (mode !== 'format-only') {
+    _fillValidation(src, total, sheetName)
+    condFormat.extendRulesToRange(src, total, sheetName)
+  }
+  const fillAfter = _captureRange(total, sheetName)
+  const refs = _diffRefs(fillBefore, fillAfter)
+  if (refs.length) {
+    _queueOp({ opType: 'fill', subSheet: sheetName,
+               cellRefs: refs, before: fillBefore, after: fillAfter,
+               summary: _fillSummary(mode, refs.length) })
+  }
+  markEdited()
+}
+
+function _fillSummary(mode, n) {
+  if (mode === 'copy')           return `Copied into ${n} cell${n === 1 ? '' : 's'}`
+  if (mode === 'format-only')    return `Filled formats into ${n} cell${n === 1 ? '' : 's'}`
+  if (mode === 'without-format') return `Filled (no format) ${n} cell${n === 1 ? '' : 's'}`
+  return `Filled ${n} cell${n === 1 ? '' : 's'}`
+}
+
+function _fillValues(src, total, sheetName, valueMode) {
+  const srcData = []
+  for (let r = src.r0; r <= src.r1; r++) {
+    const row = []
+    for (let c = src.c0; c <= src.c1; c++) row.push(sheet.getCell(cellId(r, c)))
+    srcData.push(row)
+  }
+  const goDown  = total.r1 > src.r1, goUp    = total.r0 < src.r0
+  const goRight = total.c1 > src.c1, goLeft  = total.c0 < src.c0
+  const srcRows = src.r1 - src.r0 + 1, srcCols = src.c1 - src.c0 + 1
+  if (goDown || goUp) {
+    const count  = goDown ? total.r1 - src.r1 : src.r0 - total.r0
+    const dir    = goDown ? 1 : -1
+    const filled = computeFillDown(srcData, count, dir, { mode: valueMode })
+    const startR = goDown ? src.r1 + 1 : total.r0
+    filled.forEach((row, rOff) => row.forEach((val, cOff) => {
+      if (typeof val === 'string' && val.startsWith('=')) {
+        const srcRowOff = dir > 0 ? rOff % srcRows : ((srcRows - 1 - rOff) % srcRows + srcRows) % srcRows
+        val = adjustFormula(val, (startR + rOff) - (src.r0 + srcRowOff), 0)
+      }
+      sheet.setCell(cellId(startR + rOff, src.c0 + cOff), val)
+    }))
+  } else if (goRight || goLeft) {
+    const count  = goRight ? total.c1 - src.c1 : src.c0 - total.c0
+    const dir    = goRight ? 1 : -1
+    const filled = computeFillRight(srcData, count, dir, { mode: valueMode })
+    const startC = goRight ? src.c1 + 1 : total.c0
+    filled.forEach((row, rOff) => row.forEach((val, cOff) => {
+      if (typeof val === 'string' && val.startsWith('=')) {
+        const srcColOff = dir > 0 ? cOff % srcCols : ((srcCols - 1 - cOff) % srcCols + srcCols) % srcCols
+        val = adjustFormula(val, 0, (startC + cOff) - (src.c0 + srcColOff))
+      }
+      sheet.setCell(cellId(src.r0 + rOff, startC + cOff), val)
+    }))
+  }
+}
+
+function _fillFormatsOnly(src, total, sn) {
+  const srcRows = src.r1 - src.r0 + 1, srcCols = src.c1 - src.c0 + 1
+  for (let r = total.r0; r <= total.r1; r++) {
+    for (let c = total.c0; c <= total.c1; c++) {
+      if (r >= src.r0 && r <= src.r1 && c >= src.c0 && c <= src.c1) continue
+      const srcR = src.r0 + ((r - src.r0 + srcRows) % srcRows)
+      const srcC = src.c0 + ((c - src.c0 + srcCols) % srcCols)
+      const fmt  = formats.get(cellId(srcR, srcC), sn)
+      if (fmt && Object.keys(fmt).length) formats.set(cellId(r, c), fmt, sn)
+      else                                formats.clear(cellId(r, c), sn)
+    }
+  }
+}
+
+function _clearFormats(src, total, sn) {
+  for (let r = total.r0; r <= total.r1; r++) {
+    for (let c = total.c0; c <= total.c1; c++) {
+      if (r >= src.r0 && r <= src.r1 && c >= src.c0 && c <= src.c1) continue
+      formats.clear(cellId(r, c), sn)
+    }
+  }
+}
+
+function _previewSeriesKind(src) {
+  const sn  = sheet.getCurrentSheet()
+  const sel = grid?.getSelection()
+  const goingDown  = sel ? sel.r1 > src.r1 : false
+  const goingRight = sel ? sel.c1 > src.c1 : false
+  const sampleAlongCol = goingDown || !goingRight
+  const vals = []
+  if (sampleAlongCol) {
+    for (let r = src.r0; r <= src.r1; r++) vals.push(sheet.getCell(cellId(r, src.c0), sn))
+  } else {
+    for (let c = src.c0; c <= src.c1; c++) vals.push(sheet.getCell(cellId(src.r0, c), sn))
+  }
+  const series = detectSeries(vals.map(v => v == null ? '' : String(v)))
+  return series ? series.kind : null
+}
+
+// ── Mount phases ─────────────────────────────────────────────────────────────
+
+function _setupGridInstance() {
   grid = createGrid(canvasRef.value, {
     onSelect(id) {
       activeCell.value   = id
@@ -996,50 +1502,88 @@ onMounted(async () => {
       refreshActiveFormat()
       _syncNumberFormat(id)
       computeSelectionStats()
+      if (isPaintingFormat.value) _applyPaintedFormat()
+      const p = parseCellId(id)
+      if (p) broadcastCursor(p.row, p.col, sheet.getCurrentSheet())
     },
-    onCommit(id, value) { sheet.setCell(id, value); history.push(); syncFlags(); isDirty.value = true },
+    onCommit(id, value) {
+      const before = sheet.getCell(id)
+      sheet.setCell(id, value)
+      if (before !== value) {
+        _queueOp({ opType: 'edit', subSheet: sheet.getCurrentSheet(),
+                   cellRefs: [id], before: { [id]: before }, after: { [id]: value } })
+        broadcastCellChange(sheet.getCurrentSheet(), id, value)
+      }
+      markEdited()
+      recomputePivotsForSheet(sheet.getCurrentSheet())
+    },
     onInput(id, value)  { formulaValue.value = value },
     onCancel(id)        { formulaValue.value = sheet.getCell(id) },
     getFormat:    id => formats.get(id, sheet.getCurrentSheet()),
     getMergeInfo: id => merge.getMasterInfo(id),
     isSlave:      id => merge.isSlave(id),
     getMasterId:  id => merge.getMasterId(id),
-    onFill(srcId, targetIds) {
-      const rawVal = sheet.getCell(srcId)
-      for (const id of targetIds) sheet.setCell(id, rawVal)
-      history.push()
-      syncFlags(); isDirty.value = true
+    getComment:   id => comments.get(id, sheet.getCurrentSheet()),
+    getValidation: id => validation.get(id, sheet.getCurrentSheet()),
+    getCondFormat: (id, val) => condFormat.getFormatOverride(id, val, sheet.getCurrentSheet()),
+    getRightInset: id => {
+      const range = sortFilter.getRange(sheet.getCurrentSheet())
+      if (!range) return 0
+      const p = parseCellId(id)
+      if (!p) return 0
+      // Reserve 19px right-padding in the filter header row inside the active range.
+      return p.row === range.r0 && p.col >= range.c0 && p.col <= range.c1 ? 19 : 0
+    },
+    onHyperlinkClick(url) { window.open(url, '_blank', 'noopener,noreferrer') },
+    onDropdownClick(id, rule, pos) { openDropdown(id, rule, pos) },
+    getSheetNames() { return sheetNames.value },
+    onFill(src, total, { withModifier = false } = {}) {
+      const series = _previewSeriesKind(src)
+      // Cmd/Ctrl held inverts the auto-detected mode — Google Sheets behaviour.
+      const mode = withModifier ? (series ? 'copy' : 'series') : 'auto'
+      _runFill(src, total, mode)
     },
     onBatchCommit(cells) {
+      const { before, after, refs } = diffCells(cells, id => sheet.getCell(id))
       for (const { id, value } of cells) sheet.setCell(id, value)
+      if (refs.length) {
+        _queueOp({ opType: 'edit', subSheet: sheet.getCurrentSheet(),
+                   cellRefs: refs, before, after,
+                   summary: refs.length > 1 ? `Edited ${refs.length} cells` : '' })
+        broadcastBatchChange(sheet.getCurrentSheet(), refs.map(id => ({ id, value: after[id] })))
+      }
+      markEdited()
+      recomputePivotsForSheet(sheet.getCurrentSheet())
+    },
+    onResizeEnd() {
       history.push()
-      syncFlags(); isDirty.value = true
+      isDirty.value = true
     },
   })
-
   // Keep DOM overlays (filter chevrons) in sync with canvas scroll/resize/freeze.
   grid.onRender(() => { renderVersion.value++ })
+}
 
+function _setupEventListeners() {
   canvasRef.value.addEventListener('contextmenu', onCanvasContextMenu)
   canvasRef.value.addEventListener('mouseup', computeSelectionStats)
   canvasRef.value.addEventListener('keyup',   computeSelectionStats)
-
   ro = new ResizeObserver(([entry]) => {
     const { width, height } = entry.contentRect
     grid.resize(width, height)
   })
   ro.observe(gridWrapRef.value)
-
-  history.init()
-  syncFlags()
-
   window.addEventListener('keydown',      onGlobalKey)
   window.addEventListener('beforeunload', onBeforeUnloadGuard)
   document.addEventListener('paste',     onDocPaste)
   document.addEventListener('copy',      onDocCopy)
   document.addEventListener('cut',       onDocCut)
   document.addEventListener('mousedown', _onDocMouseDown)
+}
 
+async function _loadInitialData() {
+  history.init()
+  syncFlags()
   if (props.id && props.id !== 'new') {
     await loadSheet(props.id)
     // Sync canvas cell data + Vue-side view-state mirrors from whatever the
@@ -1060,7 +1604,18 @@ onMounted(async () => {
     _syncNumberFormat('A1')
     history.init()
     syncFlags()
+  } else if (props.id === 'new') {
+    // Google-Sheets model: create the doc immediately so there is never an
+    // "unsaved" state.  The parent swaps the URL to ?id=<name> via onSaved.
+    const name = await autoCreate(currentTitle.value || 'Untitled Spreadsheet')
+    if (name) emit('saved', name)
   }
+}
+
+onMounted(async () => {
+  _setupGridInstance()
+  _setupEventListeners()
+  await _loadInitialData()
 })
 
 onBeforeUnmount(() => {
@@ -1070,7 +1625,7 @@ onBeforeUnmount(() => {
   // debounce window) silently drops the most recent changes — exactly the
   // "data is lost when I come back" report. The fetch uses `keepalive: true`
   // so the request survives the unmount.
-  if (props.id !== 'new' && isDirty.value) {
+  if (isDirty.value && props.id && props.id !== 'new') {
     saveExisting(props.id, currentTitle.value, { keepalive: true })
   }
   window.removeEventListener('beforeunload', onBeforeUnloadGuard)
@@ -1095,57 +1650,91 @@ function onBeforeUnloadGuard(e) {
 
 let _autoSaveTimer = null
 
+// Operation queue — populated by _queueOp() at write sites (paste, fill,
+// import, cell edit, etc.).  Flushed after each successful save so each
+// op is hard-linked to the Version row it produced.  See versions.py
+// record_op + list_versions for the consumer side.
+const _opQueue = []
+function _queueOp({ opType, cellRefs = null, before = null, after = null,
+                    summary = '', subSheet = '' }) {
+	if (props.id === 'new') return        // pre-save doc has no version yet
+	_opQueue.push({ opType, cellRefs, before, after, summary, subSheet })
+}
+
+// Snapshot {id → value} for a rectangular cell range, used before/after each
+// write so ops carry their own diff.  Caller passes the active sub-sheet.
+function _captureRange(rect, sheetName) {
+	const out = {}
+	if (!rect) return out
+	const sn = sheetName || sheet.getCurrentSheet()
+	for (let r = rect.r0; r <= rect.r1; r++) {
+		for (let c = rect.c0; c <= rect.c1; c++) {
+			const id = cellId(r, c)
+			out[id] = sheet.getCell(id, sn)
+		}
+	}
+	return out
+}
+
+// Diff two id→value maps, returning the ids whose value changed.  Used to
+// trim noisy before/after pairs down to the cells that actually moved.
+function _diffRefs(before, after) {
+	const ids = new Set([...Object.keys(before || {}), ...Object.keys(after || {})])
+	return [...ids].filter(id => (before?.[id]) !== (after?.[id]))
+}
+
+async function _flushOps() {
+	if (!_opQueue.length || props.id === 'new') return
+	const batch = _opQueue.splice(0, _opQueue.length)
+	try {
+		const version = await versionsApi.latestVersion(props.id)
+		await Promise.all(batch.map(op =>
+			versionsApi.recordOp({ sheet: props.id, version, ...op })))
+	} catch (e) {
+		// Op recording is best-effort — never block the editor on it.
+		console.warn('Op log flush failed:', e)
+	}
+}
+
 function _triggerAutoSave() {
-  if (props.id === 'new') return   // new docs require manual first-save
   clearTimeout(_autoSaveTimer)
   _autoSaveTimer = setTimeout(_doAutoSave, 2000)
 }
 
 async function _doAutoSave() {
-  if (props.id === 'new' || !isDirty.value) return
+  if (!isDirty.value) return
   await saveExisting(props.id, currentTitle.value)
   if (!saveError.value) {
-    isDirty.value  = false
+    isDirty.value   = false
     justSaved.value = true
     setTimeout(() => { justSaved.value = false }, 2500)
+    _flushOps()
   }
 }
 
-// Awaits any pending autosave + flushes one more save if still dirty. Called
-// before in-app navigation away from this view so the user never loses unsaved
-// edits when clicking the back button.
 async function flushSave() {
-  if (props.id === 'new' || !isDirty.value) return
+  if (!isDirty.value) return
   clearTimeout(_autoSaveTimer)
   await _doAutoSave()
 }
 
 async function flushAndClose() {
-  // New unsaved docs: ask the user whether to discard or save first. Existing
-  // docs: silently flush, then close.
-  if (props.id === 'new' && isDirty.value) {
-    const ok = window.confirm('This spreadsheet has not been saved. Discard?')
-    if (!ok) return
-  } else {
-    await flushSave()
-  }
+  await flushSave()
   emit('close')
 }
 
 // Watch for any dirty change → schedule auto-save
 watch(isDirty, (dirty) => { if (dirty) _triggerAutoSave() })
 
-// Also auto-save when the title itself is edited (for existing docs)
-function onTitleBlur() {
-  if (props.id !== 'new') _triggerAutoSave()
-}
+// Re-render the canvas when the filter row is toggled so row-0 cells reserve
+// (or release) right-padding for the chevron buttons.
+watch(showSortFilter, () => { grid?.render?.() })
+
+function onTitleBlur() { _triggerAutoSave() }
 
 watch(isSaving, (cur, prev) => { if (prev && !cur && !saveError.value) isDirty.value = false })
 
-function onSave() {
-  if (props.id === 'new') openSaveDialog(currentTitle.value)
-  else                    _doAutoSave()
-}
+function onSave() { _doAutoSave() }
 
 // ── Formula bar ───────────────────────────────────────────────────────────────
 
@@ -1158,12 +1747,12 @@ function onFormulaKey(e) {
   if (acVisible.value) {
     if (e.key === 'ArrowDown') { e.preventDefault(); acIdx.value = Math.min(acIdx.value + 1, acItems.value.length - 1); return }
     if (e.key === 'ArrowUp')   { e.preventDefault(); acIdx.value = Math.max(acIdx.value - 1, 0); return }
-    if ((e.key === 'Tab' || e.key === 'Enter') && acItems.value[acIdx.value]) { e.preventDefault(); commitAc(acItems.value[acIdx.value]); return }
+    if ((e.key === 'Tab' || e.key === 'Enter') && acItems.value[acIdx.value]) { e.preventDefault(); commitAc(acItems.value[acIdx.value]); return }  // item obj
     if (e.key === 'Escape') { acItems.value = []; return }
   }
   if (e.key === 'Enter' || e.key === 'Tab') {
     e.preventDefault()
-    sheet.setCell(activeCell.value, formulaValue.value); history.push(); syncFlags(); isDirty.value = true
+    sheet.setCell(activeCell.value, formulaValue.value); markEdited()
     canvasRef.value?.focus()
   }
   if (e.key === 'Escape') {
@@ -1174,64 +1763,51 @@ function onFormulaKey(e) {
 
 // ── Keyboard shortcuts ────────────────────────────────────────────────────────
 
-function onGlobalKey(e) {
-  const mod     = e.metaKey || e.ctrlKey
-  const inInput = document.activeElement?.tagName === 'INPUT'
-                  && document.activeElement !== formulaInputRef.value
-
-  if (mod && e.key === 'z' && !e.shiftKey)                          { e.preventDefault(); undo(); return }
-  if (mod && (e.key === 'y' || (e.shiftKey && e.key === 'z')))      { e.preventDefault(); redo(); return }
-  if (mod && e.key === 'b' && !inInput)                             { e.preventDefault(); toggleFmt('bold'); return }
-  if (mod && e.key === 'i' && !inInput)                             { e.preventDefault(); toggleFmt('italic'); return }
-  if (mod && e.key === 'u' && !inInput)                             { e.preventDefault(); toggleFmt('underline'); return }
-  if (mod && e.shiftKey && (e.key === 'x' || e.key === 'X') && !inInput) { e.preventDefault(); toggleFmt('strikethrough'); return }
-  if (mod && (e.key === '`' || e.code === 'Backquote') && !inInput) {
-    e.preventDefault()
-    showFormulas.value = !showFormulas.value
-    _repopulateGrid()
-    return
-  }
-  if (mod && e.key === '`' && !inInput)                              { e.preventDefault(); toggleShowFormulas(); return }
-  if (e.key === 'F4' && !inInput)                                    { e.preventDefault(); repeatLast(); return }
-  if (mod && e.key === 's')                                         { e.preventDefault(); onSave(); return }
-  if (mod && e.key === 'f')                                         { e.preventDefault(); showFindReplace.value = true; return }
-  if (mod && e.key === 'l' && !inInput)                             { e.preventDefault(); openHyperlinkDialog(); return }
-  if (e.altKey && e.key === 'ArrowDown' && !inInput)                { e.preventDefault(); openQuickFilterForActive(); return }
-  if (mod && (e.key === '=' || e.key === '+'))                      { e.preventDefault(); zoomBy(+0.1); return }
-  if (mod && e.key === '-')                                         { e.preventDefault(); zoomBy(-0.1); return }
-  if (mod && e.key === '0')                                         { e.preventDefault(); resetZoom();  return }
-  if (!mod && !inInput && e.key === '?')                            { e.preventDefault(); showShortcutsHelp.value = true; return }
-  if (e.key === 'Escape' && !inInput) {
-    // Cancel any active cut/copy "marching ants" highlight.
-    if (clipboard.hasData()) { clipboard.clear(); clipboardHas.value = false; grid?.setMarchingAnts(null); return }
-  }
-  if (mod && e.key === 'd' && !inInput) {
-    e.preventDefault()
-    if (!grid) return
-    const { r0, c0, r1, c1 } = grid.getSelection()
-    if (r1 <= r0) return
-    for (let c = c0; c <= c1; c++) {
-      const srcVal = sheet.getCell(colLabel(c) + (r0 + 1))
-      for (let r = r0 + 1; r <= r1; r++) sheet.setCell(colLabel(c) + (r + 1), srcVal)
+function fillDown() {
+  if (!grid) return
+  const { r0, c0, r1, c1 } = grid.getSelection()
+  if (r1 <= r0) return
+  for (let c = c0; c <= c1; c++) {
+    const srcVal = sheet.getCell(colLabel(c) + (r0 + 1))
+    for (let r = r0 + 1; r <= r1; r++) {
+      const val = typeof srcVal === 'string' && srcVal.startsWith('=')
+        ? adjustFormula(srcVal, r - r0, 0) : srcVal
+      sheet.setCell(colLabel(c) + (r + 1), val)
     }
-    history.push()
-    syncFlags(); isDirty.value = true
-    return
   }
-  if (mod && e.key === 'r' && !inInput) {
-    e.preventDefault()
-    if (!grid) return
-    const { r0, c0, r1, c1 } = grid.getSelection()
-    if (c1 <= c0) return
-    for (let r = r0; r <= r1; r++) {
-      const srcVal = sheet.getCell(colLabel(c0) + (r + 1))
-      for (let c = c0 + 1; c <= c1; c++) sheet.setCell(colLabel(c) + (r + 1), srcVal)
-    }
-    history.push()
-    syncFlags(); isDirty.value = true
-    return
-  }
+  markEdited()
 }
+
+function fillRight() {
+  if (!grid) return
+  const { r0, c0, r1, c1 } = grid.getSelection()
+  if (c1 <= c0) return
+  for (let r = r0; r <= r1; r++) {
+    const srcVal = sheet.getCell(colLabel(c0) + (r + 1))
+    for (let c = c0 + 1; c <= c1; c++) {
+      const val = typeof srcVal === 'string' && srcVal.startsWith('=')
+        ? adjustFormula(srcVal, 0, c - c0) : srcVal
+      sheet.setCell(colLabel(c) + (r + 1), val)
+    }
+  }
+  markEdited()
+}
+
+// Mirrors `clipboard.hasData()` reactively so the context menu can show /
+// hide its Paste-Special entries without polling.
+const clipboardHas = ref(false)
+
+const { onGlobalKey } = useShortcuts({
+  formulaInputEl:           () => formulaInputRef.value,
+  undo, redo, onSave, toggleFmt, repeatLast, toggleShowFormulas,
+  showFindReplace, showShortcutsHelp,
+  openVersionHistory, openHyperlinkDialog, openCommentPanel, openQuickFilterForActive,
+  zoomBy, resetZoom,
+  commentPanel, dropdownPanel, splitText,
+  revertSplitPreview: _revertSplitPreview, closeSplit: _closeSplit,
+  clipboard, clipboardHas, setMarchingAnts: (v) => grid?.setMarchingAnts(v),
+  fillDown, fillRight,
+})
 
 // ── Clipboard ─────────────────────────────────────────────────────────────────
 
@@ -1239,10 +1815,6 @@ function _canvasActive() {
   const ae = document.activeElement
   return ae === canvasRef.value || ae === formulaInputRef.value || gridWrapRef.value?.contains(ae)
 }
-
-// Mirrors `clipboard.hasData()` reactively so the context menu can show /
-// hide its Paste-Special entries without polling.
-const clipboardHas = ref(false)
 
 function onDocCopy(e) {
   if (!_canvasActive()) return
@@ -1256,7 +1828,7 @@ function onDocCut(e) {
   if (!_canvasActive()) return
   e.preventDefault()
   const src = grid.getSelection()
-  clipboard.cut(src); history.push(); syncFlags(); isDirty.value = true
+  clipboard.cut(src); markEdited()
   clipboardHas.value = true
   grid.setMarchingAnts(src)
 }
@@ -1264,151 +1836,130 @@ function onDocPaste(e) {
   if (!_canvasActive()) return
   e.preventDefault()
   let pasted = false
+  const destSel = grid.getSelection()
+  const sn = sheet.getCurrentSheet()
+  const before = _captureRange(destSel, sn)
   if (clipboard.hasData()) {
     // Internal cut/copy: use internal paste so cut properly clears source cells
-    clipboard.paste(activeCell.value, () => { history.push(); syncFlags() })
+    clipboard.paste(activeCell.value, () => { history.push(); syncFlags() }, 'all', destSel)
     _repopulateGrid()
     pasted = true
   } else {
     const text = e.clipboardData?.getData('text/plain')
     if (text) {
-      clipboard.pasteFromText(text, activeCell.value, () => { history.push(); syncFlags() })
+      clipboard.pasteFromText(text, activeCell.value, () => { history.push(); syncFlags() }, destSel)
       _repopulateGrid()
       pasted = true
     }
   }
   clipboardHas.value = clipboard.hasData()
   grid.setMarchingAnts(null)
-  if (pasted) isDirty.value = true   // ensure autosave fires
+  if (pasted) {
+    const after = _captureRange(destSel, sn)
+    const refs  = _diffRefs(before, after)
+    if (refs.length) {
+      _queueOp({ opType: 'paste', subSheet: sn, cellRefs: refs,
+                 before, after,
+                 summary: `Pasted into ${refs.length} cell${refs.length === 1 ? '' : 's'}` })
+    }
+    isDirty.value = true   // ensure autosave fires
+  }
 }
 
 // Right-click → Paste special. `kind` ∈ {'values', 'formats', 'formulas'}.
 function doPasteSpecial(kind) {
   contextMenu.open = false
   if (!clipboard.hasData()) return
-  clipboard.paste(activeCell.value, () => { history.push(); syncFlags() }, kind)
+  const destSel = grid.getSelection()
+  const sn = sheet.getCurrentSheet()
+  const before = _captureRange(destSel, sn)
+  clipboard.paste(activeCell.value, () => { history.push(); syncFlags() }, kind, destSel)
   _repopulateGrid()
   clipboardHas.value = clipboard.hasData()
   grid?.setMarchingAnts(null)
+  const after = _captureRange(destSel, sn)
+  const refs  = _diffRefs(before, after)
+  if (refs.length) {
+    _queueOp({ opType: 'paste', subSheet: sn, cellRefs: refs,
+               before, after,
+               summary: `Pasted ${kind} into ${refs.length} cell${refs.length === 1 ? '' : 's'}` })
+  }
   isDirty.value = true
+  recomputePivotsForSheet(sheet.getCurrentSheet())
 }
 
 // ── History ───────────────────────────────────────────────────────────────────
 
-function undo() {
-  if (!history.undo()) return
+// Re-mirror the canvas view state into the Vue refs that drive context-menu
+// predicates (freezeRows > 0, manualHiddenRows.size > 0, ...). Called every
+// time a snapshot lands — load, undo, redo — so the UI catches up with the
+// grid's restored state.
+function _syncViewMirrors() {
+  const v = grid?.viewSnapshot?.()
+  if (!v) return
+  freezeRows.value = v.freezeRows || 0
+  freezeCols.value = v.freezeCols || 0
+  manualHiddenRows.clear(); for (const r of (v.hiddenRows || [])) manualHiddenRows.add(r)
+  manualHiddenCols.clear(); for (const c of (v.hiddenCols || [])) manualHiddenCols.add(c)
+}
+
+function _afterHistoryNavigate() {
   _repopulateGrid()
-  syncNames(); activeCell.value = 'A1'; formulaValue.value = sheet.getCell('A1')
+  _applyHiddenRows()        // filter state restored → re-apply to grid
+  _syncViewMirrors()
+  syncNames()
+  activeCell.value   = 'A1'
+  formulaValue.value = sheet.getCell('A1')
   refreshActiveFormat(); _syncNumberFormat('A1'); syncFlags()
   grid?.setMarchingAnts(null); clipboard.clear(); clipboardHas.value = false
+}
+
+function undo() {
+  if (!history.undo()) return
+  _afterHistoryNavigate()
 }
 function redo() {
   if (!history.redo()) return
-  _repopulateGrid()
-  syncNames(); activeCell.value = 'A1'; formulaValue.value = sheet.getCell('A1')
-  refreshActiveFormat(); _syncNumberFormat('A1'); syncFlags()
-  grid?.setMarchingAnts(null); clipboard.clear(); clipboardHas.value = false
+  _afterHistoryNavigate()
 }
 
-// ── Export / Import CSV ───────────────────────────────────────────────────────
-
-function exportCSV() {
-  const data = sheet.getRawData()
-  let maxR = 0, maxC = 0
-  for (const id of Object.keys(data)) {
-    const p = parseCellId(id)
-    if (!p) continue
-    if (p.row > maxR) maxR = p.row
-    if (p.col > maxC) maxC = p.col
-  }
-  const rows = []
-  for (let r = 0; r <= maxR; r++) {
-    const row = []
-    for (let c = 0; c <= maxC; c++) {
-      const v = sheet.getDisplayValue(colLabel(c) + (r + 1))
-      row.push(String(v).includes(',') ? `"${v}"` : v)
-    }
-    rows.push(row.join(','))
-  }
-  const blob = new Blob([rows.join('\n')], { type: 'text/csv' })
-  const a = Object.assign(document.createElement('a'), {
-    href: URL.createObjectURL(blob),
-    download: `${currentTitle.value}.csv`,
-  })
-  a.click()
-}
-
-function triggerImport() {
-  csvInputRef.value?.click()
-}
-
-function importCSV(e) {
-  const file = e.target.files?.[0]
-  if (!file) return
-  const reader = new FileReader()
-  reader.onload = ev => {
-    const text = ev.target.result
-    const rows = _parseCSV(text)
-    grid.clearAll()
-    const currentSh = sheet.getCurrentSheet()
-    // Clear existing data first
-    for (const id of Object.keys(sheet.getRawData(currentSh))) {
-      sheet.setCell(id, '')
-    }
-    for (let r = 0; r < rows.length; r++) {
-      for (let c = 0; c < rows[r].length; c++) {
-        const id = colLabel(c) + (r + 1)
-        const val = rows[r][c]
-        if (val !== '') sheet.setCell(id, val)
-      }
-    }
-    // Repopulate canvas
-    for (const id of Object.keys(sheet.getRawData(currentSh))) {
-      grid.setCell(id, sheet.getDisplayValue(id))
-    }
-    history.push()   // post-mutate snapshot
-    syncFlags()
-    isDirty.value = true   // critical: without this, the CSV import is never autosaved
-  }
-  reader.readAsText(file)
-  // Reset so the same file can be imported again
-  e.target.value = ''
-}
-
-function _parseCSV(text) {
-  const rows = []
-  const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n')
-  for (const line of lines) {
-    if (line === '' && rows.length === lines.length - 1) continue
-    const cells = []
-    let i = 0
-    while (i < line.length) {
-      if (line[i] === '"') {
-        i++
-        let cell = ''
-        while (i < line.length) {
-          if (line[i] === '"' && line[i + 1] === '"') { cell += '"'; i += 2 }
-          else if (line[i] === '"') { i++; break }
-          else { cell += line[i++] }
-        }
-        if (line[i] === ',') i++
-        cells.push(cell)
-      } else {
-        const end = line.indexOf(',', i)
-        if (end === -1) { cells.push(line.slice(i)); i = line.length }
-        else { cells.push(line.slice(i, end)); i = end + 1 }
-      }
-    }
-    rows.push(cells)
-  }
-  return rows
-}
 
 // ── Number format ─────────────────────────────────────────────────────────────
 
 function _syncNumberFormat(id) {
   const fmt = formats.get(id, sheet.getCurrentSheet())
   activeNumberFormat.value = fmt.numberFormat || ''
+}
+
+function toggleNumberFmt(type) {
+  onNumberFormatChange(activeNumberFormatType.value === type ? '' : type)
+}
+
+// ── Format painter ────────────────────────────────────────────────────────────
+
+let _copiedFormat = null
+
+function toggleFormatPainter() {
+  if (isPaintingFormat.value) {
+    isPaintingFormat.value = false
+    _copiedFormat = null
+    return
+  }
+  const srcId = activeCell.value
+  _copiedFormat = { ...formats.get(srcId, sheet.getCurrentSheet()) }
+  isPaintingFormat.value = true
+}
+
+function _applyPaintedFormat() {
+  if (!isPaintingFormat.value || !_copiedFormat) return
+  const ids = selectionIds()
+  formats.applyToRange(ids, _copiedFormat, sheet.getCurrentSheet())
+  history.push()
+  syncFlags()
+  isDirty.value = true
+  isPaintingFormat.value = false
+  _copiedFormat = null
+  refreshActiveFormat()
 }
 
 function onNumberFormatChange(value) {
@@ -1424,33 +1975,238 @@ function onNumberFormatChange(value) {
   isDirty.value = true
 }
 
+// ── Comments ──────────────────────────────────────────────────────────────────
+
+function openCommentPanel() {
+  if (!grid) return
+  const id   = activeCell.value
+  const rect = canvasRef.value?.getBoundingClientRect() || { left: 100, top: 100 }
+  commentPanel.id   = id
+  commentPanel.text = comments.get(id, sheet.getCurrentSheet()) || ''
+  commentPanel.x    = rect.left + 60
+  commentPanel.y    = rect.top  + 40
+  commentPanel.open = true
+}
+
+function saveComment() {
+  comments.set(commentPanel.id, commentPanel.text, sheet.getCurrentSheet())
+  commentPanel.open = false
+  grid?.render()
+  isDirty.value = true
+}
+
+function deleteComment() {
+  comments.clear(commentPanel.id, sheet.getCurrentSheet())
+  commentPanel.open = false
+  grid?.render()
+  isDirty.value = true
+}
+
+// ── Data validation ───────────────────────────────────────────────────────────
+
+function openValidationDialog() {
+  const e = validation.get(activeCell.value, sheet.getCurrentSheet())
+  validationDialog.type     = e?.type     || 'list'
+  validationDialog.operator = e?.operator || 'between'
+  validationDialog.val1     = String(e?.min ?? '')
+  validationDialog.val2     = String(e?.max ?? '')
+  validationDialog.listRaw  = (e?.options || []).join(', ')
+  validationDialog.message  = e?.message  || ''
+  validationDialog.open     = true
+}
+
+function confirmValidation() {
+  const ids = selectionIds()
+  const sn  = sheet.getCurrentSheet()
+  const msg = validationDialog.message.trim() || undefined
+  let rule
+  if (validationDialog.type === 'list') {
+    const options = validationDialog.listRaw.split(',').map(s => s.trim()).filter(Boolean)
+    rule = { type: 'list', options, message: msg }
+  } else {
+    const op  = validationDialog.operator
+    const v1  = parseFloat(validationDialog.val1)
+    const v2  = parseFloat(validationDialog.val2)
+    const min = isNaN(v1) ? undefined : v1
+    const max = ['between', 'not_between'].includes(op) && !isNaN(v2) ? v2 : undefined
+    rule = { type: validationDialog.type, operator: op, min, max, message: msg }
+  }
+  for (const id of ids) validation.set(id, rule, sn)
+  validationDialog.open = false
+  grid?.render()
+  isDirty.value = true
+}
+
+function removeValidation() {
+  const ids = selectionIds()
+  const sn  = sheet.getCurrentSheet()
+  for (const id of ids) validation.clear(id, sn)
+  validationDialog.open = false
+  grid?.render()
+  isDirty.value = true
+}
+
+function openDropdown(id, rule, pos = {}) {
+  if (rule?.type !== 'list') return
+  dropdownPanel.id      = id
+  dropdownPanel.options = rule.options
+  dropdownPanel.x       = pos.x ?? 0
+  dropdownPanel.y       = pos.y ?? 0
+  dropdownPanel.w       = pos.w ?? 120
+  dropdownPanel.open    = true
+}
+
+function pickDropdownOption(opt) {
+  sheet.setCell(dropdownPanel.id, opt)
+  dropdownPanel.open = false
+  markEdited()
+}
+
+// ── Conditional formatting ────────────────────────────────────────────────────
+
+const CF_COND_OPTIONS = [
+  { label: 'Greater than',     value: 'gt'          },
+  { label: 'Less than',        value: 'lt'          },
+  { label: 'Greater or equal', value: 'gte'         },
+  { label: 'Less or equal',    value: 'lte'         },
+  { label: 'Equal to',         value: 'eq'          },
+  { label: 'Not equal to',     value: 'neq'         },
+  { label: 'Between',          value: 'between'     },
+  { label: 'Contains',         value: 'contains'    },
+  { label: 'Does not contain', value: 'notcontains' },
+  { label: 'Is empty',         value: 'empty'       },
+  { label: 'Is not empty',     value: 'notempty'    },
+]
+
+const cfRangeLabel = computed(() => {
+  const { r0, c0, r1, c1 } = cfDialog.range
+  return `${colLabel(c0)}${r0 + 1}:${colLabel(c1)}${r1 + 1}`
+})
+
+function openCfDialog(existingId) {
+  const sel = grid?.getSelection() || { r0: 0, c0: 0, r1: 0, c1: 0 }
+  cfDialog.range      = { ...sel }
+  cfDialog.editId     = existingId
+  cfDialog.condType   = 'gt'
+  cfDialog.condValue  = ''
+  cfDialog.condValue2 = ''
+  cfDialog.fmtColor   = ''
+  cfDialog.fmtBg      = 'var(--surface-red-1)'
+  cfDialog.open       = true
+}
+
+function saveCfRule() {
+  const sn = sheet.getCurrentSheet()
+  const rule = {
+    range: { ...cfDialog.range },
+    condition: { type: cfDialog.condType, value: cfDialog.condValue, value2: cfDialog.condValue2 },
+    format: { ...(cfDialog.fmtColor ? { color: cfDialog.fmtColor } : {}), ...(cfDialog.fmtBg && cfDialog.fmtBg !== '#ffffff' ? { backgroundColor: cfDialog.fmtBg } : {}) },
+  }
+  if (cfDialog.editId !== null) condFormat.updateRule(cfDialog.editId, rule, sn)
+  else condFormat.addRule(rule, sn)
+  cfDialog.open = false
+  grid?.render()
+  isDirty.value = true
+}
+
+function deleteCfRule() {
+  condFormat.removeRule(cfDialog.editId, sheet.getCurrentSheet())
+  cfDialog.open = false
+  grid?.render()
+  isDirty.value = true
+}
+
+
+
+// ── Cell edit history ─────────────────────────────────────────────────────────
+
+async function openCellHistory() {
+  contextMenu.open = false
+  if (props.id === 'new') return
+  const id = activeCell.value
+  cellHistory.cell    = id
+  cellHistory.open    = true
+  cellHistory.loading = true
+  cellHistory.error   = ''
+  cellHistory.entries = []
+  try {
+    cellHistory.entries = await versionsApi.cellHistory(
+      props.id, id, sheet.getCurrentSheet(),
+    )
+  } catch (err) {
+    cellHistory.error = err.message || 'Failed to load cell history'
+  } finally {
+    cellHistory.loading = false
+  }
+}
+
+
 // ── Find & Replace ────────────────────────────────────────────────────────────
 
 function onNavigateTo(id) {
   if (!grid) return
   const p = parseCellId(id)
   if (!p) return
-  // Move grid selection — use internal moveSel via re-using getSelection approach
-  // We trigger a programmatic selection by dispatching to the grid's public API indirectly
-  // The grid doesn't expose moveSel directly, so we update activeCell and re-render
-  activeCell.value   = id
-  formulaValue.value = sheet.getCell(id)
-  refreshActiveFormat()
-  _syncNumberFormat(id)
-  // Use batchSetCells no-op to trigger a render; grid selection must be done via canvas focus + key
-  // Since grid doesn't expose moveSel, we store coords and scroll via a workaround
-  grid.render()
+  grid.moveTo(p.row, p.col)
 }
 
 // ── Sort & Filter ─────────────────────────────────────────────────────────────
 
+// Expand a single anchor cell to the contiguous non-empty data block around it
+// (Google-Sheets Ctrl+A behaviour).  Returns null when the anchor itself is
+// empty so the caller can decide what to do.
+function _detectContiguousBlock(r, c) {
+  const id0 = cellId(r, c)
+  if (!String(sheet.getCell(id0) ?? '').length) return null
+  const hasVal = (rr, cc) => String(sheet.getCell(cellId(rr, cc)) ?? '').length > 0
+  let r0 = r, r1 = r, c0 = c, c1 = c
+  while (r0 > 0 && hasVal(r0 - 1, c)) r0--
+  while (hasVal(r1 + 1, c))           r1++
+  while (c0 > 0 && hasVal(r0, c0 - 1)) c0--
+  while (hasVal(r0, c1 + 1))           c1++
+  // Walk again from the new top-row left/right edges in case the block widens
+  // below; this matches Google Sheets' "smart" expansion well enough for now.
+  for (let rr = r0; rr <= r1; rr++) {
+    while (c0 > 0 && hasVal(rr, c0 - 1)) c0--
+    while (hasVal(rr, c1 + 1))           c1++
+  }
+  return { r0, c0, r1, c1 }
+}
+
+// Create a filter on the user's current selection.  Single-cell selection
+// auto-expands to the contiguous data block (or refuses if the cell is empty).
+function _createFilterOnSelection() {
+  if (!grid) return
+  const sel = grid.getSelection()
+  const isSingle = sel.r0 === sel.r1 && sel.c0 === sel.c1
+  const range = isSingle
+    ? (_detectContiguousBlock(sel.r0, sel.c0) || { r0: sel.r0, c0: sel.c0, r1: sel.r0, c1: sel.c0 })
+    : { r0: sel.r0, c0: sel.c0, r1: sel.r1, c1: sel.c1 }
+  sortFilter.setRange(range, sheet.getCurrentSheet())
+  filterPanel.open = false
+  _applyHiddenRows()
+  grid?.render?.()
+  history.push()
+  isDirty.value = true
+}
+
+function _removeFilter() {
+  sortFilter.clearRange(sheet.getCurrentSheet())
+  filterPanel.open = false
+  _applyHiddenRows()
+  grid?.render?.()
+  history.push()
+  isDirty.value = true
+}
+
 function openFilterPanel(colIdx, event) {
   const rect = event.target.getBoundingClientRect()
   const wrapRect = gridWrapRef.value.getBoundingClientRect()
+  const cfg = sortFilter.getFilterConfig(sheet.getCurrentSheet())
   filterPanel.open     = true
   filterPanel.col      = colIdx
-  filterPanel.operator = sortFilter.getFilterConfig()[colIdx]?.operator || 'contains'
-  filterPanel.value    = sortFilter.getFilterConfig()[colIdx]?.value    || ''
+  filterPanel.operator = cfg[colIdx]?.operator || 'contains'
+  filterPanel.value    = cfg[colIdx]?.value    || ''
   filterPanel.style    = {
     top:  (rect.bottom - wrapRect.top + 2) + 'px',
     left: (rect.left   - wrapRect.left)    + 'px',
@@ -1464,41 +2220,50 @@ function openQuickFilterForActive() {
   const id = activeCell.value
   const p  = parseCellId(id)
   if (!p) return
-  showSortFilter.value = true
+  if (!sortFilter.hasFilter(sheet.getCurrentSheet())) _createFilterOnSelection()
   nextTick(() => {
+    const range = sortFilter.getRange(sheet.getCurrentSheet())
+    if (!range || p.col < range.c0 || p.col > range.c1) return
     const rects   = grid?.getColumnHeaderRects?.() || []
     const colRect = rects.find(r => r.c === p.col)
-    const row0    = grid?.getRow0Rect?.()
-    if (!colRect || !row0) return
+    const rowRect = grid?.getRowRect?.(range.r0)
+    if (!colRect || !rowRect) return
+    const cfg = sortFilter.getFilterConfig(sheet.getCurrentSheet())
     filterPanel.open     = true
     filterPanel.col      = p.col
-    filterPanel.operator = sortFilter.getFilterConfig()[p.col]?.operator || 'contains'
-    filterPanel.value    = sortFilter.getFilterConfig()[p.col]?.value    || ''
+    filterPanel.operator = cfg[p.col]?.operator || 'contains'
+    filterPanel.value    = cfg[p.col]?.value    || ''
     filterPanel.style    = {
-      top:  (row0.y + row0.height + 2) + 'px',
+      top:  (rowRect.y + rowRect.height + 2) + 'px',
       left: (colRect.x + colRect.width - 232 - 4) + 'px',  // 232px panel width
     }
   })
 }
 
 function applyFilter() {
-  sortFilter.setFilter(filterPanel.col, { operator: filterPanel.operator, value: filterPanel.value })
+  sortFilter.setFilter(
+    filterPanel.col,
+    { operator: filterPanel.operator, value: filterPanel.value },
+    sheet.getCurrentSheet(),
+  )
   filterPanel.open = false
   _repopulateGrid()
   _applyHiddenRows()
+  history.push()
   isDirty.value = true
 }
 
 function clearFilterCol() {
-  sortFilter.clearFilter(filterPanel.col)
+  sortFilter.clearFilter(filterPanel.col, sheet.getCurrentSheet())
   filterPanel.open = false
   _repopulateGrid()
   _applyHiddenRows()
+  history.push()
   isDirty.value = true
 }
 
 function doSort(colIdx, dir) {
-  sortFilter.sort(colIdx, dir)
+  sortFilter.sort(colIdx, dir, sheet.getCurrentSheet())
   filterPanel.open = false
   _repopulateGrid()
   _applyHiddenRows()
@@ -1514,36 +2279,11 @@ function doSortActive(dir) {
 
 // ── Context menu ──────────────────────────────────────────────────────────────
 
-const contextMenu = reactive({ open: false, x: 0, y: 0, targetRow: 0, targetCol: 0, mode: 'cell' })
-const tabMenu     = reactive({ open: false, x: 0, y: 0, name: '' })
-
 const showRenameDialog = ref(false)
 const renameValue      = ref('')
 const renameError      = ref('')
+const renameInputRef   = ref(null)
 let _renameTarget      = ''
-
-function onCanvasContextMenu(e) {
-  e.preventDefault()
-  tabMenu.open = false
-  const hit = grid.getHitRegion(e.clientX, e.clientY)
-  const sel = grid.getSelection()
-  contextMenu.targetRow = hit.headerRow ?? hit.cell?.r ?? sel.r0
-  contextMenu.targetCol = hit.headerCol ?? hit.cell?.c ?? sel.c0
-  contextMenu.mode      = hit.headerCol !== null && hit.headerCol !== undefined ? 'colHeader'
-                        : hit.headerRow !== null && hit.headerRow !== undefined ? 'rowHeader'
-                        : 'cell'
-  contextMenu.x = e.clientX
-  contextMenu.y = e.clientY
-  contextMenu.open = true
-}
-
-function openTabMenu(e, name) {
-  contextMenu.open = false
-  tabMenu.name = name
-  tabMenu.x = e.clientX
-  tabMenu.y = e.clientY
-  tabMenu.open = true
-}
 
 function openRenameDialog(name) {
   tabMenu.open = false
@@ -1551,6 +2291,14 @@ function openRenameDialog(name) {
   renameValue.value  = name
   renameError.value  = ''
   showRenameDialog.value = true
+  // Dialog mounts the input asynchronously — focus + select on the next two
+  // ticks so the user can type immediately instead of clicking the field.
+  nextTick(() => nextTick(() => {
+    const el = renameInputRef.value?.$el?.querySelector?.('input')
+            ?? renameInputRef.value?.input
+            ?? renameInputRef.value
+    if (el?.focus) { el.focus(); el.select?.() }
+  }))
 }
 
 function confirmRename() {
@@ -1560,41 +2308,56 @@ function confirmRename() {
     return
   }
   showRenameDialog.value = false
+  history.push()
   isDirty.value = true
 }
 
 function doDuplicateSheet(name) {
   tabMenu.open = false
   _duplicateSheet(name)
+  history.push()
   isDirty.value = true
 }
 
 function doDeleteSheet(name) {
   tabMenu.open = false
-  if (_deleteSheet(name)) isDirty.value = true
+  if (_deleteSheet(name)) { history.push(); isDirty.value = true }
 }
 
 function _onDocMouseDown(e) {
   // Close context menus only when clicking OUTSIDE them. Never close on
   // mousedown when clicking a button inside — that would remove the element
   // before its click event fires, making every menu item a no-op.
-  const menus = document.querySelectorAll('.sn-ctx-menu')
+  const menus = document.querySelectorAll('.sn-ctx-menu, .sn-comment-panel, .sn-dropdown-panel, .sn-sp-pop')
   let inside = false
   for (const el of menus) if (el.contains(e.target)) { inside = true; break }
-  if (!inside) { contextMenu.open = false; tabMenu.open = false }
+  if (!inside) {
+    contextMenu.open = false
+    tabMenu.open = false
+    dropdownPanel.open = false
+    // Split-text outside-click is treated as Cancel — preview is reverted
+    // because the user never explicitly committed to the result.
+    if (splitText.open) { _revertSplitPreview(); _closeSplit() }
+  }
 }
+
 
 function doInsertRow(below = false, count = 1) {
   contextMenu.open = false
   const atRow = contextMenu.targetRow + (below ? 1 : 0)
   for (let i = 0; i < count; i++) {
+    const sn = sheet.getCurrentSheet()
     sheet.insertRow(atRow)
-    formats.insertRow(atRow, sheet.getCurrentSheet())
+    formats.insertRow(atRow, sn)
+    comments.insertRow(atRow, sn)
+    validation.insertRow(atRow, sn)
+    condFormat.insertRow(atRow, sn)
+    sortFilter.insertRow(atRow, sn)
     grid.shiftRowHeights(atRow, 1)
   }
   _repopulateGrid()
-  history.push()   // post-mutate
-  syncFlags(); isDirty.value = true
+  _applyHiddenRows()
+  markEdited()
 }
 
 // ── Zoom ──────────────────────────────────────────────────────────────────────
@@ -1715,47 +2478,66 @@ function confirmInsertMany() {
 function doDeleteRow() {
   contextMenu.open = false
   const atRow = contextMenu.targetRow
+  const sn = sheet.getCurrentSheet()
   sheet.deleteRow(atRow)
-  formats.deleteRow(atRow, sheet.getCurrentSheet())
+  formats.deleteRow(atRow, sn)
+  comments.deleteRow(atRow, sn)
+  validation.deleteRow(atRow, sn)
+  condFormat.deleteRow(atRow, sn)
+  sortFilter.deleteRow(atRow, sn)
   grid.shiftRowHeights(atRow + 1, -1)
   _repopulateGrid()
-  history.push()   // post-mutate
-  syncFlags(); isDirty.value = true
+  _applyHiddenRows()
+  markEdited()
+  recomputePivotsForSheet(sn)
 }
 
 function doInsertCol(right = false, count = 1) {
   contextMenu.open = false
   const atCol = contextMenu.targetCol + (right ? 1 : 0)
+  const sn = sheet.getCurrentSheet()
   for (let i = 0; i < count; i++) {
     sheet.insertCol(atCol)
-    formats.insertCol(atCol, sheet.getCurrentSheet())
+    formats.insertCol(atCol, sn)
+    comments.insertCol(atCol, sn)
+    validation.insertCol(atCol, sn)
+    condFormat.insertCol(atCol, sn)
+    sortFilter.insertCol(atCol, sn)
     grid.shiftColWidths(atCol, 1)
   }
   _repopulateGrid()
-  history.push()   // post-mutate
-  syncFlags(); isDirty.value = true
+  _applyHiddenRows()
+  markEdited()
 }
 
 function doDeleteCol() {
   contextMenu.open = false
   const atCol = contextMenu.targetCol
+  const sn = sheet.getCurrentSheet()
   sheet.deleteCol(atCol)
-  formats.deleteCol(atCol, sheet.getCurrentSheet())
+  formats.deleteCol(atCol, sn)
+  comments.deleteCol(atCol, sn)
+  validation.deleteCol(atCol, sn)
+  condFormat.deleteCol(atCol, sn)
+  sortFilter.deleteCol(atCol, sn)
   grid.shiftColWidths(atCol + 1, -1)
   _repopulateGrid()
-  history.push()   // post-mutate
-  syncFlags(); isDirty.value = true
+  _applyHiddenRows()
+  markEdited()
+  recomputePivotsForSheet(sn)
 }
 
 function doAutoFitCol() {
   contextMenu.open = false
   grid?.autoFitCol(contextMenu.targetCol)
+  history.push()
   isDirty.value = true
 }
 
 function doAutoFitRow() {
   contextMenu.open = false
   grid?.autoFitRow(contextMenu.targetRow)
+  history.push()
   isDirty.value = true
 }
 
@@ -1794,8 +2576,7 @@ function applyBorder(preset) {
       if (Object.keys(upd).length) formats.applyToRange([id], upd, sheetName)
     }
   }
-  history.push()   // post-mutate
-  syncFlags(); isDirty.value = true
+  markEdited()
   grid.render()
 }
 
@@ -1808,8 +2589,7 @@ function toggleMerge() {
   const masterId = colLabel(c0) + (r0 + 1)
   if (merge.isMaster(masterId)) merge.unmerge(r0, c0, r1, c1)
   else                          merge.merge(r0, c0, r1, c1)
-  history.push()   // post-mutate
-  syncFlags(); isDirty.value = true
+  markEdited()
   grid.render()
 }
 
@@ -1819,24 +2599,28 @@ function doFreezeRow() {
   contextMenu.open = false
   freezeRows.value = contextMenu.targetRow + 1
   grid?.setFreeze(freezeRows.value, freezeCols.value)
+  history.push(); isDirty.value = true
 }
 
 function doFreezeCol() {
   contextMenu.open = false
   freezeCols.value = contextMenu.targetCol + 1
   grid?.setFreeze(freezeRows.value, freezeCols.value)
+  history.push(); isDirty.value = true
 }
 
 function doUnfreezeRows() {
   contextMenu.open = false
   freezeRows.value = 0
   grid?.setFreeze(freezeRows.value, freezeCols.value)
+  history.push(); isDirty.value = true
 }
 
 function doUnfreezeCols() {
   contextMenu.open = false
   freezeCols.value = 0
   grid?.setFreeze(freezeRows.value, freezeCols.value)
+  history.push(); isDirty.value = true
 }
 
 // ── Hide / unhide rows & cols ─────────────────────────────────────────────────
@@ -1848,7 +2632,7 @@ const manualHiddenRows = reactive(new Set())
 const manualHiddenCols = reactive(new Set())
 
 function _applyHiddenRows() {
-  const filterHidden = sortFilter.computeHiddenRows()
+  const filterHidden = sortFilter.computeHiddenRows(sheet.getCurrentSheet())
   const union = new Set([...filterHidden, ...manualHiddenRows])
   grid?.setHiddenRows(union)
 }
@@ -1863,7 +2647,7 @@ function doHideRows() {
   const { r0, r1 } = grid.getSelection()
   for (let r = r0; r <= r1; r++) manualHiddenRows.add(r)
   _applyHiddenRows()
-  isDirty.value = true
+  history.push(); isDirty.value = true
 }
 
 function doHideCols() {
@@ -1872,117 +2656,64 @@ function doHideCols() {
   const { c0, c1 } = grid.getSelection()
   for (let c = c0; c <= c1; c++) manualHiddenCols.add(c)
   _applyHiddenCols()
-  isDirty.value = true
+  history.push(); isDirty.value = true
 }
 
 function doUnhideAllRows() {
   contextMenu.open = false
   manualHiddenRows.clear()
   _applyHiddenRows()
-  isDirty.value = true
+  history.push(); isDirty.value = true
 }
 
 function doUnhideAllCols() {
   contextMenu.open = false
   manualHiddenCols.clear()
   _applyHiddenCols()
-  isDirty.value = true
+  history.push(); isDirty.value = true
 }
+
 
 // ── Cmd+K command palette ─────────────────────────────────────────────────────
 // CommandPalette ships its own Cmd+K listener that flips `showCmdPalette`.
 const showCmdPalette = ref(false)
 const cmdQuery       = ref('')
 
-const cmdGroups = computed(() => {
-  const item = (name, title, description, fn) => ({ name, title, description, fn })
-  return [
-    {
-      title: 'Format',
-      component: CommandPaletteItem,
-      items: [
-        item('bold',          'Bold',                 'Ctrl+B',       () => toggleFmt('bold')),
-        item('italic',        'Italic',               'Ctrl+I',       () => toggleFmt('italic')),
-        item('underline',     'Underline',            'Ctrl+U',       () => toggleFmt('underline')),
-        item('strikethrough', 'Strikethrough',        'Ctrl+Shift+X', () => toggleFmt('strikethrough')),
-        item('wrap',          'Wrap text',            '',             () => toggleFmt('wrapText')),
-        item('clearFmt',      'Clear formatting',     '',             () => clearFormatting()),
-        item('align-left',    'Align left',           '',             () => setAlign('left')),
-        item('align-center',  'Align center',         '',             () => setAlign('center')),
-        item('align-right',   'Align right',          '',             () => setAlign('right')),
-        item('valign-top',    'Align top',            '',             () => setValign('top')),
-        item('valign-middle', 'Align middle',         '',             () => setValign('middle')),
-        item('valign-bottom', 'Align bottom',         '',             () => setValign('bottom')),
-        item('dec-inc',       'Increase decimal places', '',          () => adjustDecimals(+1)),
-        item('dec-dec',       'Decrease decimal places', '',          () => adjustDecimals(-1)),
-      ],
-    },
-    {
-      title: 'Edit',
-      component: CommandPaletteItem,
-      items: [
-        item('undo',     'Undo',         'Ctrl+Z', () => undo()),
-        item('redo',     'Redo',         'Ctrl+Y', () => redo()),
-        item('repeat',   'Repeat last action', 'F4', () => repeatLast()),
-        item('find',     'Find & replace',     'Ctrl+F', () => { showFindReplace.value = true }),
-        item('formulas', 'Show formulas',      'Ctrl+`', () => { showFormulas.value = !showFormulas.value; _repopulateGrid() }),
-        item('shortcuts','Keyboard shortcuts', '?',      () => { showShortcutsHelp.value = true }),
-      ],
-    },
-    {
-      title: 'Structure',
-      component: CommandPaletteItem,
-      items: [
-        item('row-above',  'Insert row above',     '', () => { contextMenu.targetRow = grid.getSelection().r0;     doInsertRow(false) }),
-        item('row-below',  'Insert row below',     '', () => { contextMenu.targetRow = grid.getSelection().r0;     doInsertRow(true) }),
-        item('row-del',    'Delete row',           '', () => { contextMenu.targetRow = grid.getSelection().r0;     doDeleteRow() }),
-        item('col-left',   'Insert column left',   '', () => { contextMenu.targetCol = grid.getSelection().c0;     doInsertCol(false) }),
-        item('col-right',  'Insert column right',  '', () => { contextMenu.targetCol = grid.getSelection().c0;     doInsertCol(true) }),
-        item('col-del',    'Delete column',        '', () => { contextMenu.targetCol = grid.getSelection().c0;     doDeleteCol() }),
-        item('row-hide',   'Hide row',             '', () => doHideRows()),
-        item('col-hide',   'Hide column',          '', () => doHideCols()),
-        item('row-unhide', 'Unhide all rows',      '', () => doUnhideAllRows()),
-        item('col-unhide', 'Unhide all columns',   '', () => doUnhideAllCols()),
-        item('autofit-w',  'Auto-fit column width', '', () => { contextMenu.targetCol = grid.getSelection().c0; doAutoFitCol() }),
-        item('autofit-h',  'Auto-fit row height',   '', () => { contextMenu.targetRow = grid.getSelection().r0; doAutoFitRow() }),
-        item('merge',      'Merge cells',          '', () => toggleMerge()),
-        item('add-rows',   `Add ${addRowsCount.value} more rows`, '', () => doAddMoreRows()),
-      ],
-    },
-    {
-      title: 'View',
-      component: CommandPaletteItem,
-      items: [
-        item('freeze-row',   'Freeze rows up to selection', '', () => { contextMenu.targetRow = grid.getSelection().r0; doFreezeRow() }),
-        item('freeze-col',   'Freeze cols up to selection', '', () => { contextMenu.targetCol = grid.getSelection().c0; doFreezeCol() }),
-        item('unfreeze-row', 'Unfreeze rows',               '', () => doUnfreezeRows()),
-        item('unfreeze-col', 'Unfreeze columns',            '', () => doUnfreezeCols()),
-        item('filter',       'Toggle filter',               '', () => { showSortFilter.value = !showSortFilter.value }),
-      ],
-    },
-    {
-      title: 'Sheet',
-      component: CommandPaletteItem,
-      items: [
-        item('sheet-add',       'Add sheet',       '', () => addSheet()),
-        item('sheet-rename',    'Rename sheet',    '', () => openRenameDialog(currentSheet.value)),
-        item('sheet-duplicate', 'Duplicate sheet', '', () => doDuplicateSheet(currentSheet.value)),
-        item('sheet-delete',    'Delete sheet',    '', () => doDeleteSheet(currentSheet.value)),
-      ],
-    },
-    {
-      title: 'File',
-      component: CommandPaletteItem,
-      items: [
-        item('save',       'Save',        'Ctrl+S', () => onSave()),
-        item('csv-export', 'Export CSV',  '',       () => exportCSV()),
-        item('csv-import', 'Import CSV',  '',       () => triggerImport()),
-      ],
-    },
-  ]
-})
+const cmdGroups = computed(() => buildCommandGroups({
+  toggleFmt, setAlign, setValign, adjustDecimals, toggleWrap, clearFormatting,
+  undo, redo, repeatLast, showFindReplace, showFormulas, repopulateGrid: _repopulateGrid, showShortcutsHelp,
+  contextMenu, getGrid: () => grid,
+  doInsertRow, doDeleteRow, doInsertCol, doDeleteCol,
+  doHideRows, doHideCols, doUnhideAllRows, doUnhideAllCols,
+  doAutoFitCol, doAutoFitRow, toggleMerge, addRowsCount, doAddMoreRows,
+  doFreezeRow, doFreezeCol, doUnfreezeRows, doUnfreezeCols, showSortFilter,
+  openPivotDialog,
+  addSheet, currentSheet, openRenameDialog, doDuplicateSheet, doDeleteSheet,
+  onSave, exportCSV, exportXLSX, exportPDF, csvInputRef, xlsxInputRef,
+}))
 
 function onCmdSelect(item) { item?.fn?.() }
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+// Returns { before, after, refs } for cells whose value actually changed.
+// Separating diff from mutation keeps onBatchCommit readable and testable.
+function diffCells(cells, getCell) {
+  const before = {}, after = {}
+  for (const { id, value } of cells) {
+    const previous = getCell(id)
+    if (previous !== value) { before[id] = previous; after[id] = value }
+  }
+  return { before, after, refs: Object.keys(after) }
+}
+
+// Snapshot the undo history, sync undo/redo button state, and flag the doc dirty.
+// Called after every user mutation that should be undoable and trigger auto-save.
+function markEdited() {
+  history.push()
+  syncFlags()
+  isDirty.value = true
+}
 
 // ── Repopulate ────────────────────────────────────────────────────────────────
 
@@ -2015,57 +2746,105 @@ function toggleShowFormulas() {
 .sn-root { display:flex; flex-direction:column; height:100vh; overflow:hidden; background:var(--surface-white); font-family:InterVar, ui-sans-serif, system-ui, sans-serif; color:var(--ink-gray-9); }
 
 /* ── Bar 1 · Identity / topbar ───────────────────────────────────────────── */
-.sn-topbar       { display:flex; align-items:center; justify-content:space-between; height:44px; padding:0 12px; border-bottom:1px solid var(--outline-gray-2); background:var(--surface-white); flex-shrink:0; }
-.sn-topbar-left  { display:flex; align-items:center; gap:8px; min-width:0; }
-.sn-topbar-right { display:flex; align-items:center; gap:8px; flex-shrink:0; }
+.sn-topbar       { display:flex; align-items:center; justify-content:space-between; height:48px; padding:0 16px; border-bottom:1px solid var(--outline-gray-2); background:var(--surface-white); flex-shrink:0; }
+/* Left cluster groups: brand+title tight (gap:4); status chips sit further away
+   (gap:12) so the title reads as the focal point, not crowded by badges. */
+.sn-topbar-left  { display:flex; align-items:center; gap:12px; min-width:0; }
+.sn-topbar-left  > .sn-app-icon-btn + .sn-title-input { margin-left:-8px; }
+.sn-topbar-right { display:flex; align-items:center; gap:6px; flex-shrink:0; }
 
 .sn-app-icon { width:28px; height:28px; flex-shrink:0; display:block; }
 .sn-app-icon-btn {
   display:inline-flex; align-items:center; justify-content:center;
-  padding:2px; margin:0; border:none; background:transparent; cursor:pointer;
+  width:36px; height:36px; padding:4px; margin:0; border:none; background:transparent; cursor:pointer;
   border-radius:8px; transition:background-color .12s;
 }
 .sn-app-icon-btn:hover  { background:var(--surface-gray-2); }
 .sn-app-icon-btn:focus-visible { outline:2px solid var(--outline-gray-4); outline-offset:2px; }
 
-.sn-title-input { height:28px; border:1px solid transparent; border-radius:6px; padding:0 8px; font-size:14px; font-weight:500; color:var(--ink-gray-9); background:transparent; outline:none; font-family:inherit; letter-spacing:.01em; transition:background-color .12s, border-color .12s, width .1s; }
+.sn-title-input { height:32px; border:1px solid transparent; border-radius:6px; padding:0 10px; font-size:15px; font-weight:600; color:var(--ink-gray-9); background:transparent; outline:none; font-family:inherit; letter-spacing:-.005em; transition:background-color .12s, border-color .12s, width .1s; }
 
-/* Unsaved-doc CTA — louder than the old subtle orange chip. Clickable; opens
-   the Save dialog. */
-.sn-unsaved-cta { cursor:pointer; letter-spacing:.04em; font-weight:600; }
-.sn-unsaved-cta:hover { filter:brightness(1.05); }
 .sn-title-input:hover { background:var(--surface-gray-2); }
 .sn-title-input:focus { border-color:var(--outline-gray-4); background:var(--surface-white); box-shadow:0 0 0 2px rgba(23,23,23,.10); }
 
+/* Hairline between action buttons and avatar — groups the cluster without
+   relying on extra padding. */
+.sn-topbar-divider { width:1px; height:20px; background:var(--outline-gray-2); margin:0 4px; flex-shrink:0; }
+
+/* Presence avatars — stacked/overlapping, each with a white ring so they
+   visually separate even when colors are similar. */
+.sn-presence { display:inline-flex; align-items:center; }
+.sn-presence-avatar { margin-left:-6px; border-radius:50%; outline:2px solid var(--surface-white); }
+.sn-presence-avatar:first-child { margin-left:0; }
+.sn-presence-more {
+  display:inline-flex; align-items:center; justify-content:center;
+  width:26px; height:26px; border-radius:50%;
+  background:var(--surface-gray-3); border:2px solid var(--surface-white);
+  margin-left:-6px; font-size:10px; font-weight:600; color:var(--ink-gray-7);
+  flex-shrink:0; cursor:default;
+}
+
+/* Save status — small muted text, Espresso ink-gray-5.  Sits quietly next to
+   the title; never competes for attention. */
+.sn-save-status { display:inline-flex; align-items:center; gap:4px; font-size:12px; font-weight:400; letter-spacing:.01em; color:var(--ink-gray-5); white-space:nowrap; user-select:none; }
+.sn-save-icon   { width:12px; height:12px; flex-shrink:0; }
+@keyframes sn-spin { to { transform:rotate(360deg); } }
+.sn-save-spin   { animation:sn-spin .9s linear infinite; }
+
+/* ── Pivot FAB ── */
+.sn-pivot-fab {
+  position: absolute; z-index: 20;
+  width: 28px; height: 28px; border-radius: 50%;
+  background: var(--surface-white);
+  border: 1px solid var(--outline-gray-2);
+  box-shadow: 0 2px 8px rgba(0,0,0,.12);
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; color: var(--ink-gray-6);
+  transition: background .1s, color .1s, box-shadow .1s;
+}
+.sn-pivot-fab:hover, .sn-pivot-fab.open {
+  background: var(--surface-gray-1);
+  color: var(--ink-gray-9);
+  box-shadow: 0 3px 12px rgba(0,0,0,.16);
+}
+.sn-pivot-fab-icon { width: 13px; height: 13px; }
+
 /* ── Bar 2 · Formula bar ─────────────────────────────────────────────────── */
-.sn-formula-bar   { display:flex; align-items:center; height:40px; padding:0 12px; border-bottom:1px solid var(--outline-gray-2); gap:8px; flex-shrink:0; background:var(--surface-white); }
-.sn-cell-ref      { width:64px; flex-shrink:0; text-align:center; font-size:12px; font-weight:600; letter-spacing:.02em; color:var(--ink-gray-8); background:var(--surface-gray-2); border-radius:6px; height:26px; display:flex; align-items:center; justify-content:center; }
+
+.sn-formula-bar   { display:flex; align-items:center; height:48px; padding:0 16px; border-bottom:1px solid var(--outline-gray-2); gap:8px; flex-shrink:0; background:var(--surface-white); }
+/* Cell address tag */
+.sn-cell-ref      { box-sizing:border-box; min-width:50px; padding:0 8px; flex-shrink:0; text-align:center; font-size:12px; font-weight:600; letter-spacing:.04em; color:var(--ink-gray-7); background:var(--surface-white); border:1px solid var(--outline-gray-2); border-radius:6px; height:30px; line-height:1; display:flex; align-items:center; justify-content:center; font-variant-numeric:tabular-nums; font-family:ui-monospace, "SF Mono", Menlo, Consolas, monospace; cursor:default; user-select:none; transition:border-color .12s, background-color .12s; }
+.sn-cell-ref:hover { border-color:var(--outline-gray-3); background:var(--surface-gray-3); }
+/* "fx" delimiter */
+.sn-fx-label      { font-size:14px; font-style:italic; font-weight:500; color:var(--ink-gray-4); letter-spacing:.02em; flex-shrink:0; padding:0 6px 0 2px; user-select:none; font-family:ui-serif, Georgia, "Times New Roman", serif; }
 .sn-formula-wrap  { position:relative; flex:1; display:flex; }
 .sn-formula-wrap .sn-formula-input { flex:1; }
-.sn-formula-input { width:100%; height:28px; border:1px solid var(--outline-gray-2); border-radius:6px; outline:none; padding:0 10px; font-size:13px; color:var(--ink-gray-9); background:var(--surface-gray-2); font-family:inherit; letter-spacing:.02em; transition:background-color .15s, border-color .15s, box-shadow .15s; }
-.sn-formula-input:hover { background:var(--surface-gray-3); }
-.sn-formula-input:focus { border-color:var(--outline-gray-4); background:var(--surface-white); box-shadow:0 0 0 2px rgba(23,23,23,.10); }
-.sn-fbar-actions  { display:flex; align-items:center; gap:6px; flex-shrink:0; }
+.sn-formula-input { box-sizing:border-box; width:100%; height:30px; line-height:1; border-radius:6px; outline:none; padding:0 10px; font-size:13px; color:var(--ink-gray-8); background:var(--surface-white); border:1px solid var(--outline-gray-2); font-family:'Fira Code', ui-monospace, 'SF Mono', Menlo, Consolas, monospace; letter-spacing:.005em; transition:background-color .15s, border-color .15s, box-shadow .15s; }
+.sn-formula-input::placeholder { color:var(--ink-gray-3); font-style:italic; font-family:inherit; }
+.sn-formula-input:hover { background:var(--surface-gray-3); border-color:var(--outline-gray-3); }
+.sn-formula-input:focus { border-color:var(--outline-gray-4); background:var(--surface-white); box-shadow:0 0 0 2px rgba(23,23,23,.08); }
+.sn-fbar-actions  { display:flex; align-items:center; gap:6px; flex-shrink:0; margin-left:4px; }
 
 /* Formula autocomplete — Frappe UI Autocomplete is form-field oriented, so the inline popover is bespoke but uses Espresso surfaces. */
-.sn-ac-list  { position:absolute; top:calc(100% + 4px); left:0; right:0; background:var(--surface-modal); border:1px solid var(--outline-gray-2); border-radius:8px; box-shadow:0 0 1px rgba(0,0,0,.35), 0 6px 8px -4px rgba(0,0,0,.1); z-index:300; max-height:240px; overflow-y:auto; padding:4px; }
+.sn-ac-list       { position:absolute; top:calc(100% + 4px); bottom:auto; left:0; right:0; background:var(--surface-modal); border:1px solid var(--outline-gray-2); border-radius:8px; box-shadow:0 0 1px rgba(0,0,0,.35), 0 6px 8px -4px rgba(0,0,0,.1); z-index:300; max-height:240px; overflow-y:auto; padding:4px; }
+.sn-ac-list--up   { top:auto; bottom:calc(100% + 4px); }
 .sn-ac-item  { display:flex; align-items:baseline; gap:10px; padding:6px 10px; cursor:pointer; white-space:nowrap; border-radius:4px; }
 .sn-ac-item:hover, .sn-ac-item.active { background:var(--surface-gray-2); }
 .sn-ac-name  { font-weight:600; font-size:13px; color:var(--ink-gray-9); min-width:90px; letter-spacing:.02em; }
 .sn-ac-sig   { font-size:11px; color:var(--ink-gray-5); letter-spacing:.01em; }
+.sn-ac-badge { font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:.04em; color:var(--ink-cyan-6, #0891b2); background:var(--surface-cyan-1, #ecfeff); border-radius:3px; padding:1px 5px; }
+/* Validation dialog two-column value row */
+.sn-vd-vals  { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
 
 /* ── Bar 3 · Formatting toolbar ──────────────────────────────────────────── */
-.sn-toolbar { display:flex; align-items:center; gap:2px; height:38px; padding:0 10px; border-bottom:1px solid var(--outline-gray-2); background:var(--surface-menu-bar); flex-shrink:0; }
+.sn-toolbar { display:flex; align-items:center; gap:2px; height:44px; padding:0 10px; border-bottom:1px solid var(--outline-gray-2); background:var(--surface-white); flex-shrink:0; }
 .sn-toolbar :deep(.fui-form-control) { width:auto; }
 .sn-toolbar :deep(select) { min-width:118px; }
 /* Font family dropdown — uses a Button trigger that hugs the short label. */
 .sn-font-family :deep(button) { padding-left:6px; padding-right:4px; gap:2px; }
 
-/* Font size — Frappe UI FormControl in a compact pill. We just tighten width
-   and hide the native spin buttons; the surface / border / focus ring come
-   from the frappe-ui tailwind preset so they match every other input. */
-.sn-font-size-input { width:44px; margin:0 4px; }
-.sn-font-size-input :deep(input) { padding-left:6px; padding-right:6px; text-align:center; font-variant-numeric:tabular-nums; -moz-appearance:textfield; }
+.sn-font-size-input { width:52px; margin:0 2px; }
+.sn-font-size-input :deep(input) { text-align:center; font-variant-numeric:tabular-nums; -moz-appearance:textfield; }
 .sn-font-size-input :deep(input::-webkit-outer-spin-button),
 .sn-font-size-input :deep(input::-webkit-inner-spin-button) { -webkit-appearance:none; margin:0; }
 .sn-vr  { width:1px; height:18px; background:var(--outline-gray-2); margin:0 6px; flex-shrink:0; }
@@ -2092,6 +2871,12 @@ function toggleShowFormulas() {
 /* ── Canvas grid ─────────────────────────────────────────────────────────── */
 .sn-grid-wrap        { flex:1; overflow:hidden; position:relative; background:var(--surface-white); }
 .sn-grid-wrap canvas { display:block; outline:none; }
+.sn-painting-format canvas { cursor: crosshair; }
+/* Lock canvas interactions while a past version is being previewed.  The
+   side panel + banner stay clickable because they live inside the same
+   wrap but are absolutely positioned with pointer-events: auto restored. */
+.sn-preview-locked canvas { pointer-events: none; opacity: 0.95; }
+.sn-preview-locked .sn-vh-panel { pointer-events: auto; }
 
 /* ── Filter overlay (chevrons sit on row 0 of data — the user's header row) ── */
 /* Covers the full canvas; button positions come from grid.colX() which already
@@ -2102,6 +2887,9 @@ function toggleShowFormulas() {
 .sn-filter-btn.active { background:var(--surface-gray-4); border-color:var(--outline-gray-4); color:var(--ink-gray-9); }
 .sn-filter-btn-icon   { width:12px; height:12px; }
 
+.sn-remote-cursor { position:absolute; pointer-events:none; border:2px solid var(--rc); box-sizing:border-box; }
+.sn-remote-cursor-label { position:absolute; top:-18px; left:-1px; background:var(--rc); color:var(--surface-white); font-size:10px; font-weight:600; padding:1px 4px; border-radius:3px 3px 3px 0; white-space:nowrap; line-height:16px; }
+
 .sn-filter-panel { position:absolute; z-index:100; background:var(--surface-modal); border:1px solid var(--outline-gray-modals); border-radius:10px; box-shadow:0 0 1px rgba(0,0,0,.35), 0 6px 8px -4px rgba(0,0,0,.1); padding:12px; width:232px; display:flex; flex-direction:column; gap:8px; }
 .sn-fp-title   { font-size:12px; font-weight:600; letter-spacing:.02em; color:var(--ink-gray-8); padding-bottom:2px; }
 .sn-fp-row     { display:flex; gap:4px; }
@@ -2109,9 +2897,56 @@ function toggleShowFormulas() {
 .sn-fp-grow    { flex:1; }
 
 /* ── Bottom · tabs + stats ───────────────────────────────────────────────── */
-.sn-bottom    { display:flex; align-items:center; height:34px; border-top:1px solid var(--outline-gray-2); background:var(--surface-menu-bar); flex-shrink:0; overflow:hidden; }
-.sn-tabs      { display:flex; align-items:center; gap:2px; padding:0 8px; flex:1; overflow:hidden; }
-.sn-stats     { display:flex; align-items:center; gap:14px; padding:0 14px; font-size:11px; letter-spacing:.02em; color:var(--ink-gray-6); flex-shrink:0; white-space:nowrap; border-left:1px solid var(--outline-gray-2); height:100%; }
+.sn-bottom { display:flex; align-items:stretch; height:36px; border-top:1px solid var(--outline-gray-2); background:var(--surface-menu-bar); flex-shrink:0; overflow:hidden; }
+
+.sn-tabs-track {
+  display:flex; align-items:stretch; flex:1; gap:0;
+  overflow-x:auto; overflow-y:hidden;
+  scrollbar-width:none; padding:0 6px;
+}
+.sn-tabs-track::-webkit-scrollbar { display:none; }
+
+.sn-tab {
+  display:inline-flex; align-items:stretch; flex-shrink:0;
+  position:relative; cursor:grab;
+}
+.sn-tab:active { cursor:grabbing; }
+
+/* Active indicator: 2px line at the bottom */
+.sn-tab--active::after {
+  content:''; position:absolute; bottom:0; left:6px; right:6px;
+  height:2px; background:var(--ink-gray-9); border-radius:1px 1px 0 0;
+}
+.sn-tab--pivot.sn-tab--active::after { background:var(--ink-cyan-7, #0e7490); }
+
+/* Main label Button */
+.sn-tab-btn { max-width:148px; }
+.sn-tab-btn :deep(button) {
+  font-size:12px; font-weight:400; color:var(--ink-gray-6);
+  padding:0 6px 0 10px; height:100%;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  max-width:148px; border-radius:0;
+}
+.sn-tab:hover .sn-tab-btn :deep(button) { color:var(--ink-gray-8); background:transparent; }
+.sn-tab--active .sn-tab-btn :deep(button) { font-weight:600; color:var(--ink-gray-9); }
+
+/* Pivot icon tint */
+.sn-tab--pivot .sn-tab-btn :deep(.icon) { color:var(--ink-cyan-7, #0e7490); }
+
+/* Chevron — only on hover */
+.sn-tab-chevron { opacity:0; transition:opacity .1s; align-self:center; }
+.sn-tab:hover .sn-tab-chevron { opacity:1; }
+.sn-tab-chevron :deep(button) { padding:0 3px; border-radius:4px; }
+
+/* Add-sheet button */
+.sn-tab-add { flex-shrink:0; align-self:center; margin:0 2px; }
+
+.sn-tab-drag-over::before {
+  content:''; position:absolute; left:0; top:6px; bottom:6px;
+  width:2px; background:var(--ink-gray-9); border-radius:1px;
+}
+
+.sn-stats { display:flex; align-items:center; gap:14px; padding:0 14px; font-size:11px; letter-spacing:.02em; color:var(--ink-gray-6); flex-shrink:0; white-space:nowrap; border-left:1px solid var(--outline-gray-2); height:100%; }
 
 /* ── Right-click context menu (positioned at cursor; uses Frappe UI Buttons inside) ── */
 .sn-ctx-menu { position:fixed; z-index:9000; background:var(--surface-modal); border:1px solid var(--outline-gray-modals); border-radius:10px; box-shadow:0 0 1px rgba(0,0,0,.35), 0 6px 8px -4px rgba(0,0,0,.1); padding:4px; min-width:208px; display:flex; flex-direction:column; gap:1px; }
@@ -2137,8 +2972,8 @@ function toggleShowFormulas() {
 .sn-help-or      { font-size:11px; letter-spacing:.02em; color:var(--ink-gray-5); }
 
 /* Sheet-tab drag visual — Espresso ink-gray-9 left edge on the drop target. */
-.sn-tab-wrap          { display:inline-flex; position:relative; cursor:grab; }
-.sn-tab-wrap:active   { cursor:grabbing; }
+.sn-tab               { cursor:grab; }
+.sn-tab:active        { cursor:grabbing; }
 .sn-tab-drag-over::before {
   content: ''; position:absolute; left:-1px; top:4px; bottom:4px; width:2px;
   background: var(--ink-gray-9); border-radius:1px;
@@ -2149,4 +2984,24 @@ function toggleShowFormulas() {
 .sn-addrows-label   { font-size:12px; letter-spacing:.02em; color:var(--ink-gray-6); }
 .sn-addrows-input   { width:72px; height:24px; border:1px solid var(--outline-gray-2); border-radius:6px; padding:0 8px; font-size:12px; color:var(--ink-gray-9); background:var(--surface-white); font-family:inherit; outline:none; }
 .sn-addrows-input:focus { border-color:var(--outline-gray-4); box-shadow:0 0 0 2px rgba(23,23,23,.10); }
+
+/* Comment panel */
+.sn-comment-panel  { position:fixed; z-index:8500; background:var(--surface-modal); border:1px solid var(--outline-gray-modals); border-radius:10px; box-shadow:0 4px 16px rgba(0,0,0,.14); padding:12px; min-width:240px; display:flex; flex-direction:column; gap:8px; }
+.sn-comment-header { display:flex; align-items:center; justify-content:space-between; }
+.sn-comment-title  { font-size:12px; font-weight:600; letter-spacing:.04em; color:var(--ink-gray-7); text-transform:uppercase; }
+.sn-comment-close  { background:none; border:none; cursor:pointer; color:var(--ink-gray-5); font-size:14px; line-height:1; padding:2px 4px; }
+.sn-comment-ta     { resize:vertical; font-family:inherit; font-size:13px; color:var(--ink-gray-9); background:var(--surface-gray-1); border:1px solid var(--outline-gray-2); border-radius:6px; padding:6px 8px; min-height:64px; outline:none; }
+.sn-comment-ta:focus { border-color:var(--outline-gray-4); }
+.sn-comment-actions { display:flex; gap:6px; justify-content:flex-end; }
+
+/* Validation dropdown panel */
+.sn-dropdown-panel { position:fixed; z-index:8500; background:var(--surface-modal); border:1px solid var(--outline-gray-modals); border-radius:8px; box-shadow:0 4px 12px rgba(0,0,0,.12); min-width:120px; max-height:200px; overflow-y:auto; }
+.sn-dropdown-opt   { padding:7px 14px; font-size:13px; color:var(--ink-gray-9); cursor:pointer; white-space:nowrap; }
+.sn-dropdown-opt:hover { background:var(--surface-gray-2); }
+
+/* Conditional format dialog rows */
+.sn-form-stack  { display:flex; flex-direction:column; gap:12px; }
+.sn-cf-fmt      { display:flex; flex-direction:row; align-items:center; gap:12px; }
+.sn-cf-fmt-label { font-size:12px; color:var(--ink-gray-6); flex:1; }
+
 </style>

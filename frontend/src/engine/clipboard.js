@@ -1,10 +1,12 @@
 // Clipboard engine — internal copy/cut/paste + system clipboard TSV interchange.
 
 import { colLabel, parseCellId } from '../utils/cells.js'
+import { adjustFormula } from './formula-adjust.js'
 
-export function createClipboard({ sheet, formats }) {
+export function createClipboard({ sheet, formats, condFormat = null, validation = null }) {
 	let _data    = null   // { 'dr,dc': rawValue }
 	let _fmts    = null   // { 'dr,dc': formatObj }
+	let _vals    = null   // { 'dr,dc': validationRule | null }
 	let _mode    = null   // 'copy' | 'cut'
 	let _srcSel  = null   // { r0, c0, r1, c1 } of the source
 
@@ -12,13 +14,14 @@ export function createClipboard({ sheet, formats }) {
 
 	function _capture(sel, mode) {
 		const { r0, c0, r1, c1 } = sel
-		_data = {}; _fmts = {}; _mode = mode; _srcSel = sel
+		_data = {}; _fmts = {}; _vals = {}; _mode = mode; _srcSel = sel
 		for (let r = r0; r <= r1; r++) {
 			for (let c = c0; c <= c1; c++) {
 				const key = `${r - r0},${c - c0}`
 				const id  = colLabel(c) + (r + 1)
 				_data[key] = sheet.getCell(id)
 				_fmts[key] = formats ? { ...formats.get(id, sheet.getCurrentSheet()) } : {}
+				_vals[key] = validation ? validation.get(id, sheet.getCurrentSheet()) : null
 			}
 		}
 	}
@@ -48,24 +51,72 @@ export function createClipboard({ sheet, formats }) {
 		_writeSystem(sel)
 	}
 
+	// Compute the (r, c) cells that should receive paste output, along with the
+	// source (dr, dc) buffer offset to pull from for each.  Three modes:
+	//   1. destSel matches the source size (or no destSel given) → anchor paste,
+	//      one buffer cell per dest cell.
+	//   2. destSel is multi-cell and source is 1×1 → tile the single value across
+	//      every dest cell.  This is the "copy A1, paste B1:D1" UX.
+	//   3. destSel is N×M and source is a divisor (k·rows, l·cols) → tile the
+	//      source block across the destination (matches Google Sheets).
+	function _resolveTargets(anch, destSel) {
+		const targets = []
+		const keys = Object.keys(_data)
+		const srcRows = _srcSel ? (_srcSel.r1 - _srcSel.r0 + 1) : 1
+		const srcCols = _srcSel ? (_srcSel.c1 - _srcSel.c0 + 1) : 1
+
+		if (!destSel || (destSel.r0 === destSel.r1 && destSel.c0 === destSel.c1)) {
+			for (const key of keys) {
+				const [dr, dc] = key.split(',').map(Number)
+				targets.push({ r: anch.row + dr, c: anch.col + dc, dr, dc })
+			}
+			return targets
+		}
+
+		const destRows = destSel.r1 - destSel.r0 + 1
+		const destCols = destSel.c1 - destSel.c0 + 1
+		const tileable = destRows % srcRows === 0 && destCols % srcCols === 0
+		if (!tileable) {                                            // fall back to anchor paste
+			for (const key of keys) {
+				const [dr, dc] = key.split(',').map(Number)
+				targets.push({ r: anch.row + dr, c: anch.col + dc, dr, dc })
+			}
+			return targets
+		}
+		for (let r = destSel.r0; r <= destSel.r1; r++) {
+			for (let c = destSel.c0; c <= destSel.c1; c++) {
+				const dr = (r - destSel.r0) % srcRows
+				const dc = (c - destSel.c0) % srcCols
+				targets.push({ r, c, dr, dc })
+			}
+		}
+		return targets
+	}
+
 	// Paste the internal buffer at anchor cell.
 	//   kind = 'all'      → values + formulas + formats (default)
 	//        = 'values'   → captured display values only, no formulas or formats
 	//        = 'formulas' → raw values/formulas only, leave formats untouched
 	//        = 'formats'  → only formats; cell content untouched
-	function paste(anchorId, historyPush, kind = 'all') {
+	//   destSel = { r0, c0, r1, c1 } (optional) — when provided and the source is
+	//             a single cell, the source is tiled across the entire dest range
+	//             (Google-Sheets behaviour: copy A1, select B1:D1, paste → B/C/D).
+	function paste(anchorId, historyPush, kind = 'all', destSel = null) {
 		if (!_data) return
 		const anch = parseCellId(anchorId)
 		if (!anch) return
 		const sh = sheet.getCurrentSheet()
-		for (const key of Object.keys(_data)) {
-			const [dr, dc] = key.split(',').map(Number)
-			const id = colLabel(anch.col + dc) + (anch.row + dr + 1)
+		const targets = _resolveTargets(anch, destSel)
+		for (const { r, c, dr, dc } of targets) {
+			const id  = colLabel(c) + (r + 1)
+			const key = `${dr},${dc}`
 			const raw = _data[key]
 			if (kind === 'all' || kind === 'formulas') {
-				sheet.setCell(id, raw)
+				const adjusted = typeof raw === 'string' && raw.startsWith('=')
+					? adjustFormula(raw, r - (_srcSel.r0 + dr), c - (_srcSel.c0 + dc))
+					: raw
+				sheet.setCell(id, adjusted)
 			} else if (kind === 'values') {
-				// Strip formulas — evaluate at the source then store the result.
 				const isFormula = typeof raw === 'string' && raw.startsWith('=')
 				const v = isFormula ? _displayAt(key) : raw
 				sheet.setCell(id, v)
@@ -73,6 +124,17 @@ export function createClipboard({ sheet, formats }) {
 			if (formats && _fmts[key] && (kind === 'all' || kind === 'formats')) {
 				formats.set(id, _fmts[key], sh)
 			}
+			if (validation && _vals && (kind === 'all' || kind === 'formats')) {
+				const rule = _vals[key]
+				if (rule) validation.set(id, rule, sh)
+				else      validation.clear(id, sh)
+			}
+		}
+		// Copy conditional-format rules to the destination range.
+		if (condFormat && _srcSel && (kind === 'all' || kind === 'formats')) {
+			const rows = _srcSel.r1 - _srcSel.r0, cols = _srcSel.c1 - _srcSel.c0
+			const dest = { r0: anch.row, c0: anch.col, r1: anch.row + rows, c1: anch.col + cols }
+			condFormat.addRulesForRange(_srcSel, dest, sh)
 		}
 		// Only consume the cut buffer when we actually moved content.
 		if (_mode === 'cut' && _srcSel && (kind === 'all' || kind === 'values' || kind === 'formulas')) {
@@ -81,9 +143,10 @@ export function createClipboard({ sheet, formats }) {
 				for (let c = c0; c <= c1; c++) {
 					const id = colLabel(c) + (r + 1)
 					sheet.setCell(id, '')
-					if (formats) formats.clear(id, sh)
+					if (formats)    formats.clear(id, sh)
+					if (validation) validation.clear(id, sh)
 				}
-			_data = _fmts = _mode = _srcSel = null
+			_data = _fmts = _vals = _mode = _srcSel = null
 		}
 		// Post-mutate snapshot — history.push() must run after the data has
 		// settled so undo restores the correct state.
@@ -103,17 +166,35 @@ export function createClipboard({ sheet, formats }) {
 		return sheet.getDisplayValue(srcId)
 	}
 
-	// Paste raw text (from system clipboard / external app).
-	function pasteFromText(text, anchorId, historyPush) {
+	// Paste raw text (from system clipboard / external app).  Honors destSel so
+	// pasting a single token into a multi-cell selection fills the whole range.
+	function pasteFromText(text, anchorId, historyPush, destSel = null) {
 		if (!text?.trim()) return
 		const anch = parseCellId(anchorId)
 		if (!anch) return
 		const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trimEnd().split('\n')
-		lines.forEach((line, dr) => {
-			line.split('\t').forEach((val, dc) => {
-				sheet.setCell(colLabel(anch.col + dc) + (anch.row + dr + 1), val)
-			})
-		})
+		const grid  = lines.map(l => l.split('\t'))
+		const srcRows = grid.length
+		const srcCols = grid.reduce((m, r) => Math.max(m, r.length), 0)
+
+		const tileable = destSel
+			&& !(destSel.r0 === destSel.r1 && destSel.c0 === destSel.c1)
+			&& ((destSel.r1 - destSel.r0 + 1) % srcRows === 0)
+			&& ((destSel.c1 - destSel.c0 + 1) % srcCols === 0)
+
+		if (tileable) {
+			for (let r = destSel.r0; r <= destSel.r1; r++) {
+				for (let c = destSel.c0; c <= destSel.c1; c++) {
+					const dr = (r - destSel.r0) % srcRows
+					const dc = (c - destSel.c0) % srcCols
+					sheet.setCell(colLabel(c) + (r + 1), grid[dr][dc] ?? '')
+				}
+			}
+		} else {
+			grid.forEach((row, dr) =>
+				row.forEach((val, dc) =>
+					sheet.setCell(colLabel(anch.col + dc) + (anch.row + dr + 1), val)))
+		}
 		historyPush?.()   // post-mutate snapshot
 	}
 
@@ -121,7 +202,7 @@ export function createClipboard({ sheet, formats }) {
 	function hasData() { return !!_data }
 	function getMode() { return _mode }
 	function getSourceSel() { return _data ? _srcSel : null }
-	function clear() { _data = _fmts = _mode = _srcSel = null }
+	function clear() { _data = _fmts = _vals = _mode = _srcSel = null }
 
 	return { copy, cut, paste, pasteFromText, hasData, getMode, getSourceSel, clear }
 }

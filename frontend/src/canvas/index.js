@@ -3,10 +3,11 @@ import { createRenderer } from './renderer.js'
 import { createOverlay }  from './overlay.js'
 import { TOTAL_ROWS, TOTAL_COLS, DEFAULT_ROW_H, ROW_HEADER_W, COL_HEADER_H, setTotalRows } from './constants.js'
 import { cellId, colLabel, parseCellId } from '../utils/cells.js'
+import { AC_FUNS, AC_FUN_KEYS, parseAcToken } from '../utils/formula-ac.js'
 
 export { colLabel, cellId, parseCellId } from '../utils/cells.js'
 
-export function createGrid(canvas, { onSelect, onCommit, onInput, onCancel, getFormat, onFill, onBatchCommit, getMergeInfo, isSlave, getMasterId } = {}) {
+export function createGrid(canvas, { onSelect, onCommit, onInput, onCancel, getFormat, onFill, onBatchCommit, getMergeInfo, isSlave, getMasterId, getComment, getValidation, getCondFormat, getRightInset, onHyperlinkClick, onDropdownClick, onResizeEnd, getSheetNames } = {}) {
   const ctx = canvas.getContext('2d')
   const dpr = window.devicePixelRatio || 1
 
@@ -22,6 +23,7 @@ export function createGrid(canvas, { onSelect, onCommit, onInput, onCancel, getF
   let resizing   = null  // { col, startX, startW }
   let resizingRow = null  // { row, startY, startH }
   let filling    = null  // { startCell }
+  let _tabAnchorCol = null  // column where the current Tab sequence started
 
   const scroll     = { x: 0, y: 0 }
   const freeze     = { rows: 0, cols: 0 }
@@ -54,8 +56,33 @@ export function createGrid(canvas, { onSelect, onCommit, onInput, onCancel, getF
   const _renderListeners = []
   function onRender(cb) { _renderListeners.push(cb); return () => { const i = _renderListeners.indexOf(cb); if (i >= 0) _renderListeners.splice(i, 1) } }
 
+  // Diff overlay: { 'A1': true, ... } for the active sheet.  Used in version-
+  // preview mode to paint changed cells with a teal highlight.  Reset on
+  // setDiffOverlay(null) when leaving preview.
+  let _diffCells = null
+  function setDiffOverlay(diffBySheet) {
+    if (!diffBySheet) { _diffCells = null; scheduleRender(); return }
+    // The caller passes diff keyed by sub-sheet name; we only know the
+    // active sheet here, so pull that slice.  When the user switches
+    // sub-sheets the caller is expected to call setDiffOverlay again.
+    _diffCells = diffBySheet
+    scheduleRender()
+  }
+  function setActiveDiffSheet(sheetName) {
+    // No-op today — _diffCells is already a sheets→cells map.  Kept as a
+    // hook for the renderer to pick the right slice.
+    _activeDiffSheet = sheetName
+    scheduleRender()
+  }
+  let _activeDiffSheet = null
+  function _getDiffFor(id) {
+    if (!_diffCells || !_activeDiffSheet) return false
+    const slice = _diffCells[_activeDiffSheet]
+    return !!(slice && slice[id])
+  }
+
   function render() {
-    renderer.render({ cssW, cssH, data, sel, selEnd, selMode, editing, getFormat, freeze, getMergeInfo, isSlave, marchAnts, marchPhase, pickerRect, zoom: _zoom })
+    renderer.render({ cssW, cssH, data, sel, selEnd, selMode, editing, getFormat, freeze, getMergeInfo, isSlave, getComment, getValidation, getCondFormat, getRightInset, getDiffFor: _diffCells ? _getDiffFor : null, marchAnts, marchPhase, pickerRect, zoom: _zoom })
     for (const cb of _renderListeners) cb()
   }
 
@@ -92,6 +119,12 @@ export function createGrid(canvas, { onSelect, onCommit, onInput, onCancel, getF
     return { y: geo.rowY(0), height: geo.rh(0) }
   }
 
+  // Rect for any row by index — lets ranged-filter chevrons sit on the range's
+  // header row (which may be row 0 or any other row).
+  function getRowRect(r) {
+    return { y: geo.rowY(r), height: geo.rh(r) }
+  }
+
   // ── Selection ────────────────────────────────────────────────────────────────
 
   function getSelRange() {
@@ -101,6 +134,23 @@ export function createGrid(canvas, { onSelect, onCommit, onInput, onCancel, getF
       mode: selMode,
     }
   }
+
+  // Restore a rectangular selection (used by the contextmenu handler when
+  // mousedown collapsed a multi-cell range the user wanted to keep).
+  function setSelRange({ r0, c0, r1, c1, mode } = {}) {
+    if (r0 == null || c0 == null || r1 == null || c1 == null) return
+    selMode = mode || 'cell'
+    sel    = geo.clamp(r0, c0)
+    selEnd = geo.clamp(r1, c1)
+    render()
+    onSelect?.(cellId(sel.r, sel.c))
+  }
+
+  // Snapshot of the selection just before the most recent mousedown — lets the
+  // contextmenu handler tell whether mousedown collapsed a multi-cell range so
+  // it can restore it for actions like Split text to columns.
+  let _preMousedownSel = null
+  function getPreMousedownSel() { return _preMousedownSel }
 
   // Max scroll so the last col/row sits flush with the viewport's right/bottom.
   // Beyond this we'd just be showing empty canvas past the sheet — Google
@@ -186,46 +236,6 @@ export function createGrid(canvas, { onSelect, onCommit, onInput, onCancel, getF
 
   // ── Formula autocomplete ─────────────────────────────────────────────────────
 
-  const _AC_FUNS = {
-    ABS:'(number)', AND:'(logical1, ...)', AVERAGE:'(number1, ...)',
-    AVERAGEIF:'(range, criteria, [avg_range])', CEILING:'(number, significance)',
-    CHOOSE:'(index, value1, ...)', COLUMN:'([reference])', COLUMNS:'(array)',
-    CONCAT:'(text1, ...)', CONCATENATE:'(text1, ...)',
-    COUNT:'(value1, ...)', COUNTA:'(value1, ...)', COUNTBLANK:'(range)',
-    COUNTIF:'(range, criteria)', COUNTIFS:'(range1, criteria1, ...)',
-    DATE:'(year, month, day)', DAY:'(date)', EXP:'(number)',
-    FALSE:'()', FIND:'(find_text, within_text, [start])',
-    FLOOR:'(number, significance)', HLOOKUP:'(value, table, row, [range])',
-    HOUR:'(time)', IF:'(test, value_if_true, [value_if_false])',
-    IFERROR:'(value, value_if_error)', IFS:'(condition1, value1, ...)',
-    INDEX:'(array, row, [col])', INDIRECT:'(ref_text)',
-    INT:'(number)', ISBLANK:'(value)', ISERROR:'(value)',
-    ISNUMBER:'(value)', ISTEXT:'(value)',
-    LARGE:'(array, k)', LEFT:'(text, [num_chars])',
-    LEN:'(text)', LN:'(number)', LOG:'(number, [base])',
-    LOWER:'(text)', MATCH:'(value, array, [type])',
-    MAX:'(number1, ...)', MID:'(text, start, num_chars)',
-    MIN:'(number1, ...)', MINUTE:'(time)', MOD:'(number, divisor)',
-    MONTH:'(date)', NOT:'(logical)', NOW:'()',
-    OR:'(logical1, ...)', PI:'()', POWER:'(base, exponent)',
-    PRODUCT:'(number1, ...)', PROPER:'(text)',
-    RAND:'()', RANDBETWEEN:'(bottom, top)', RANK:'(number, ref, [order])',
-    REPLACE:'(text, start, num_chars, new_text)', REPT:'(text, times)',
-    RIGHT:'(text, [num_chars])', ROUND:'(number, digits)',
-    ROUNDDOWN:'(number, digits)', ROUNDUP:'(number, digits)',
-    ROW:'([reference])', ROWS:'(array)',
-    SEARCH:'(find_text, within_text, [start])',
-    SMALL:'(array, k)', SQRT:'(number)',
-    SUBSTITUTE:'(text, old, new, [instance])',
-    SUM:'(number1, ...)', SUMIF:'(range, criteria, [sum_range])',
-    SUMIFS:'(sum_range, range1, criteria1, ...)',
-    TEXT:'(value, format_text)', TEXTJOIN:'(delimiter, ignore_empty, text1, ...)',
-    TIME:'(hour, minute, second)', TODAY:'()', TRIM:'(text)', TRUE:'()',
-    UPPER:'(text)', VALUE:'(text)',
-    VLOOKUP:'(value, table, col_index, [range_lookup])',
-    WEEKDAY:'(date, [return_type])', YEAR:'(date)',
-  }
-
   function _acSetup() {
     _acEl = document.createElement('div')
     _acEl.style.cssText = [
@@ -239,19 +249,20 @@ export function createGrid(canvas, { onSelect, onCommit, onInput, onCancel, getF
     canvas.parentElement.appendChild(_acEl)
   }
 
-  function _acToken(value, cursor) {
-    if (!value || !value.startsWith('=')) return null
-    const before = value.slice(0, cursor)
-    const m = before.match(/(?:[=(+\-*/&^,])([A-Za-z][A-Za-z0-9_]*)$|^=([A-Za-z][A-Za-z0-9_]*)$/)
-    return m ? (m[1] || m[2]) : null
-  }
-
+  // _acItems: { name, kind: 'fn' | 'sheet' }[]
   function _acUpdate(value, cursor) {
     if (!_acEl) return
-    const tok = _acToken(value, cursor)
-    if (!tok) { _acHide(); return }
-    const up = tok.toUpperCase()
-    _acItems = Object.keys(_AC_FUNS).filter(n => n.startsWith(up)).sort().slice(0, 8)
+    const result = parseAcToken(value, cursor)
+    if (!result) { _acHide(); return }
+    const up     = result.tok.toUpperCase()
+    const fns    = AC_FUN_KEYS.filter(n => n.startsWith(up)).slice(0, 6)
+    const sheets = (getSheetNames?.() || [])
+      .filter(n => n.toUpperCase().startsWith(up) && !fns.includes(n.toUpperCase()))
+      .slice(0, 3)
+    _acItems = [
+      ...fns.map(name => ({ name, kind: 'fn' })),
+      ...sheets.map(name => ({ name, kind: 'sheet' })),
+    ]
     if (!_acItems.length) { _acHide(); return }
     _acIdx = 0
     _acRender()
@@ -260,20 +271,28 @@ export function createGrid(canvas, { onSelect, onCommit, onInput, onCancel, getF
   function _acRender() {
     if (!_acEl) return
     _acEl.innerHTML = ''
-    _acItems.forEach((name, i) => {
+    _acItems.forEach((item, i) => {
       const row = document.createElement('div')
-      row.style.cssText = `display:flex;align-items:baseline;gap:10px;padding:6px 12px;cursor:pointer;white-space:nowrap;${i === _acIdx ? 'background:#f3f3f3;' : ''}`
-      row.innerHTML = `<span style="font-weight:600;min-width:80px;color:#171717;">${name}</span><span style="font-size:11px;color:#7c7c7c;">${_AC_FUNS[name]}</span>`
-      row.addEventListener('mousedown', e => { e.preventDefault(); _acCommit(name) })
+      row.style.cssText = `display:flex;align-items:baseline;gap:10px;padding:6px 12px;cursor:pointer;white-space:nowrap;border-radius:4px;${i === _acIdx ? 'background:#f3f3f3;' : ''}`
+      const right = item.kind === 'sheet'
+        ? `<span style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:#0891b2;background:#ecfeff;border-radius:3px;padding:1px 5px;">sheet</span>`
+        : `<span style="font-size:11px;color:#7c7c7c;">${AC_FUNS[item.name]}</span>`
+      row.innerHTML = `<span style="font-weight:600;min-width:80px;color:#171717;">${item.name}</span>${right}`
+      row.addEventListener('mousedown', e => { e.preventDefault(); _acCommit(item) })
       row.addEventListener('mouseover', () => { _acIdx = i; _acHighlight() })
       _acEl.appendChild(row)
     })
-    const ox = parseFloat(overlay.el.style.left) || 0
-    const oy = parseFloat(overlay.el.style.top)  || 0
+    const ox = parseFloat(overlay.el.style.left)   || 0
+    const oy = parseFloat(overlay.el.style.top)    || 0
     const oh = parseFloat(overlay.el.style.height) || 24
     _acEl.style.left    = ox + 'px'
     _acEl.style.top     = (oy + oh + 2) + 'px'
     _acEl.style.display = 'block'
+    // Flip upward if the list clips the viewport bottom.
+    const rect = _acEl.getBoundingClientRect()
+    if (rect.bottom > window.innerHeight - 8) {
+      _acEl.style.top = Math.max(0, oy - _acEl.offsetHeight - 2) + 'px'
+    }
   }
 
   function _acHighlight() {
@@ -288,16 +307,17 @@ export function createGrid(canvas, { onSelect, onCommit, onInput, onCancel, getF
     if (_acEl) _acEl.style.display = 'none'
   }
 
-  function _acCommit(name) {
-    const input = overlay.el
-    const cursor = input.selectionStart, value = input.value
-    const before = value.slice(0, cursor)
-    const m = before.match(/(?:[=(+\-*/&^,])([A-Za-z][A-Za-z0-9_]*)$|^=([A-Za-z][A-Za-z0-9_]*)$/)
-    if (m) {
-      const tok = m[1] || m[2], tokStart = cursor - tok.length
-      const newVal = value.slice(0, tokStart) + name + '(' + value.slice(cursor)
-      input.value = newVal
-      const pos = tokStart + name.length + 1
+  // item: { name, kind: 'fn' | 'sheet' }
+  function _acCommit(item) {
+    const input  = overlay.el
+    const cursor = input.selectionStart
+    const result = parseAcToken(input.value, cursor)
+    if (result) {
+      const { tokStart } = result
+      const suffix = item.kind === 'sheet' ? '!' : '('
+      const newVal = input.value.slice(0, tokStart) + item.name + suffix + input.value.slice(cursor)
+      input.value  = newVal
+      const pos    = tokStart + item.name.length + 1
       input.setSelectionRange(pos, pos)
       onInput?.(cellId(sel.r, sel.c), newVal)
     }
@@ -564,8 +584,9 @@ export function createGrid(canvas, { onSelect, onCommit, onInput, onCancel, getF
 
   function showEditor(initialValue, mode = 'enter') {
     editMode = mode
+    selEnd = { r: sel.r, c: sel.c }
     const fmt = getFormat ? getFormat(cellId(sel.r, sel.c)) : {}
-    overlay.position(geo.colX(sel.c), geo.rowY(sel.r), geo.cw(sel.c), geo.rh(sel.r), fmt)
+    overlay.position(geo.colX(sel.c) * _zoom, geo.rowY(sel.r) * _zoom, geo.cw(sel.c) * _zoom, geo.rh(sel.r) * _zoom, fmt, _zoom)
     overlay.show(initialValue)
     editing = true
     onInput?.(cellId(sel.r, sel.c), initialValue)
@@ -596,12 +617,32 @@ export function createGrid(canvas, { onSelect, onCommit, onInput, onCancel, getF
       if ((e.key === 'Tab' || e.key === 'Enter') && _acItems[_acIdx]) { e.preventDefault(); _acCommit(_acItems[_acIdx]); return }
       if (e.key === 'Escape')    { _acHide(); return }
     }
+    // Commit any active cell-ref pick when the user types a printable char
+    // (e.g. '+' after picking C1) so the next arrow key starts a fresh ref
+    // instead of replacing the one already inserted.
+    if (pickerKb && e.key.length === 1 && !e.metaKey && !e.ctrlKey) {
+      _pickerKbCommit()
+    }
     // In 'enter' mode, arrow keys commit the current value and move the
     // selection one cell in that direction — matching Excel / Google Sheets.
     // In 'edit' mode (F2 / dblclick), arrows stay as cursor-movement.
     if (editMode === 'enter' && (e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
       const dirs = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] }
       const [dr, dc] = dirs[e.key]
+      const mod = e.ctrlKey || e.metaKey
+      // If picker is already active, move it.
+      if (pickerKb) {
+        e.preventDefault()
+        _pickerKbMove(dr, dc, e.shiftKey, mod)
+        return
+      }
+      // If caret is at a ref-acceptable position, start the picker.
+      if (_isRefPosition(overlay.el)) {
+        e.preventDefault()
+        _pickerKbStart(overlay.el, dr, dc, e.shiftKey)
+        return
+      }
+      // Otherwise commit and move selection (normal enter-mode arrow behaviour).
       e.preventDefault()
       _commitAndHide()
       moveSel(sel.r + dr, sel.c + dc)
@@ -610,16 +651,22 @@ export function createGrid(canvas, { onSelect, onCommit, onInput, onCancel, getF
     }
     if (e.key === 'Enter') {
       e.preventDefault()
+      if (pickerKb) _pickerKbCommit()
       _commitAndHide()
-      moveSel(sel.r + 1, sel.c)
+      const anchorC = _tabAnchorCol ?? sel.c
+      _tabAnchorCol = null
+      moveSel(sel.r + 1, anchorC)
       canvas.focus()
     } else if (e.key === 'Tab') {
       e.preventDefault()
+      if (pickerKb) _pickerKbCommit()
+      if (_tabAnchorCol === null) _tabAnchorCol = sel.c
       _commitAndHide()
       moveSel(sel.r, e.shiftKey ? sel.c - 1 : sel.c + 1)
       canvas.focus()
     } else if (e.key === 'Escape') {
       _acHide()
+      if (pickerKb) { _pickerKbCancel(); return }  // Esc while picking: cancel pick, stay editing
       editing = false
       overlay.hide()
       _clearPickerHighlight()
@@ -643,17 +690,10 @@ export function createGrid(canvas, { onSelect, onCommit, onInput, onCancel, getF
   // ── Fill handle ──────────────────────────────────────────────────────────────
 
   function _fillHandlePos() {
-    // Anchor at the bottom-right of the merged footprint when the active cell
-    // is a merge master, so the visual handle and its hit test align.
-    const merge = getMergeInfo ? getMergeInfo(cellId(sel.r, sel.c)) : null
-    const spanC = merge ? merge.colSpan : 1
-    const spanR = merge ? merge.rowSpan : 1
-    let w = 0, h = 0
-    for (let i = 0; i < spanC; i++) w += geo.cw(sel.c + i)
-    for (let i = 0; i < spanR; i++) h += geo.rh(sel.r + i)
+    const { r1, c1 } = getSelRange()
     return {
-      fx: geo.colX(sel.c) + w,
-      fy: geo.rowY(sel.r) + h,
+      fx: geo.colX(c1) + geo.cw(c1),
+      fy: geo.rowY(r1) + geo.rh(r1),
     }
   }
 
@@ -663,7 +703,7 @@ export function createGrid(canvas, { onSelect, onCommit, onInput, onCancel, getF
     const x = (ex - rect.left) / _zoom
     const y = (ey - rect.top)  / _zoom
     const { fx, fy } = _fillHandlePos()
-    return Math.hypot(x - fx, y - fy) <= 8
+    return Math.hypot(x - fx, y - fy) <= 6
   }
 
   // ── Auto-fit (double-click resize edge or header) ────────────────────────────
@@ -731,6 +771,29 @@ export function createGrid(canvas, { onSelect, onCommit, onInput, onCancel, getF
 
   canvas.addEventListener('mousedown', e => {
     const rect = canvas.getBoundingClientRect()
+
+    // Snapshot the selection BEFORE any handler below mutates it. The
+    // contextmenu handler reads this to restore a multi-cell range that
+    // mousedown collapsed (so right-click → Split text to columns operates
+    // on the user's actual selection, not just the clicked cell).
+    _preMousedownSel = getSelRange()
+
+    // Right-click inside the existing selection preserves it so the context
+    // menu (Split text to columns, Delete, etc.) operates on the multi-cell
+    // range the user already selected. Outside the selection we fall through
+    // — the click moves selection to that cell first, matching Google Sheets.
+    // Note: on macOS Ctrl+click can fire with button=0; the contextmenu
+    // handler's restore-from-snapshot path covers that case.
+    if (e.button === 2) {
+      const h = geo.hitTest(e.clientX, e.clientY, rect)
+      if (h) {
+        const r = getSelRange()
+        if (h.r >= r.r0 && h.r <= r.r1 && h.c >= r.c0 && h.c <= r.c1) {
+          canvas.focus()
+          return
+        }
+      }
+    }
 
     // ── PRIORITY 0: formula reference picker ────────────────────────────────
     // While a `=…` formula is focused (in-cell overlay OR top formula bar),
@@ -800,7 +863,8 @@ export function createGrid(canvas, { onSelect, onCommit, onInput, onCancel, getF
     }
 
     if (hitTestFillHandle(e.clientX, e.clientY, rect)) {
-      filling = { startCell: cellId(sel.r, sel.c) }
+      const { r0, c0, r1, c1 } = getSelRange()
+      filling = { r0, c0, r1, c1 }
       return
     }
 
@@ -846,15 +910,42 @@ export function createGrid(canvas, { onSelect, onCommit, onInput, onCancel, getF
     const h = geo.hitTest(e.clientX, e.clientY, rect)
     if (!h) return
     canvas.focus()
+
+    const hId = cellId(h.r, h.c)
+
+    // Ctrl/Cmd+click on a hyperlink → open URL without starting a selection drag
+    if ((e.ctrlKey || e.metaKey) && getFormat?.(hId)?.hyperlink) {
+      onHyperlinkClick?.(getFormat(hId).hyperlink)
+      return
+    }
+
+    // Click on the dropdown arrow of a validated cell → open dropdown
+    if (getValidation?.(hId)) {
+      const x = geo.colX(h.c), y = geo.rowY(h.r)
+      const w = geo.cw(h.c), cellRight = x + w
+      const lx = (e.clientX - rect.left) / _zoom
+      if (lx >= cellRight - 14) {
+        e.stopPropagation()   // prevent _onDocMouseDown from closing the just-opened panel
+        moveSel(h.r, h.c)
+        const pos = {
+          x: rect.left + x * _zoom,
+          y: rect.top  + (y + geo.rh(h.r)) * _zoom,
+          w: w * _zoom,
+        }
+        onDropdownClick?.(hId, getValidation(hId), pos)
+        return
+      }
+    }
+
     dragging = true
     // Redirect clicks on slave cells to their master cell
     let tr = h.r, tc = h.c
     if (getMasterId) {
-      const mid = getMasterId(cellId(h.r, h.c))
+      const mid = getMasterId(hId)
       if (mid) { const p = parseCellId(mid); if (p) { tr = p.row; tc = p.col } }
     }
     if (e.shiftKey) extendSel(tr, tc)
-    else            moveSel(tr, tc)
+    else            { _tabAnchorCol = null; moveSel(tr, tc) }
   })
 
   canvas.addEventListener('dblclick', e => {
@@ -882,10 +973,14 @@ export function createGrid(canvas, { onSelect, onCommit, onInput, onCancel, getF
     const resizeCol = geo.hitTestColResize(e.clientX, e.clientY, rect)
     const resizeRowHit = !resizing && geo.hitTestRowResize(e.clientX, e.clientY, rect)
     const overFill  = !resizing && !resizingRow && !dragging && hitTestFillHandle(e.clientX, e.clientY, rect)
-    if (resizeCol !== null || resizing)          canvas.style.cursor = 'col-resize'
+    const hoverCell = !resizing && !resizingRow && !dragging && !overFill
+      ? geo.hitTest(e.clientX, e.clientY, rect) : null
+    const overLink = hoverCell && getFormat?.(cellId(hoverCell.r, hoverCell.c))?.hyperlink
+    if (resizeCol !== null || resizing)            canvas.style.cursor = 'col-resize'
     else if (resizeRowHit !== null || resizingRow) canvas.style.cursor = 'row-resize'
-    else if (overFill)                            canvas.style.cursor = 'crosshair'
-    else                                          canvas.style.cursor = 'default'
+    else if (overFill)                             canvas.style.cursor = 'crosshair'
+    else if (overLink)                             canvas.style.cursor = 'pointer'
+    else                                           canvas.style.cursor = 'default'
 
     if (filling) {
       const h = geo.hitTest(e.clientX, e.clientY, rect)
@@ -908,17 +1003,15 @@ export function createGrid(canvas, { onSelect, onCommit, onInput, onCancel, getF
     if (h) extendSel(h.r, h.c)
   })
 
-  canvas.addEventListener('mouseup', () => {
+  canvas.addEventListener('mouseup', (e) => {
     if (filling) {
-      const { r0, c0, r1, c1 } = getSelRange()
-      const srcId  = filling.startCell
-      const targets = []
-      for (let r = r0; r <= r1; r++)
-        for (let c = c0; c <= c1; c++) {
-          const id = cellId(r, c)
-          if (id !== srcId) targets.push(id)
-        }
-      if (targets.length) onFill?.(srcId, targets)
+      const src   = filling
+      const total = getSelRange()
+      const hasTarget = total.r0 !== src.r0 || total.c0 !== src.c0 ||
+                        total.r1 !== src.r1 || total.c1 !== src.c1
+      // Modifier flag lets onFill toggle copy ↔ series — Cmd/Ctrl held = invert
+      // the auto-detected mode (matches Google Sheets behaviour).
+      if (hasTarget) onFill?.(src, total, { withModifier: e.metaKey || e.ctrlKey })
       filling = null
     }
     if (picker) {
@@ -946,17 +1039,21 @@ export function createGrid(canvas, { onSelect, onCommit, onInput, onCancel, getF
   }
 
   function _onDocMouseUp() {
+    const didResize = resizing || resizingRow
     if (resizing)    resizing    = null
     if (resizingRow) resizingRow = null
+    if (didResize) onResizeEnd?.()
   }
 
   document.addEventListener('mousemove', _onDocMouseMove)
   document.addEventListener('mouseup',   _onDocMouseUp)
 
-  // Document-level keydown delegator — picks up arrow keys for both the
-  // in-cell overlay AND the top formula bar input without touching Vue.
-  // Only intercepts when a =-formula input is the focus target.
+  // Document-level keydown delegator — picks up arrow keys for the top
+  // formula bar input without touching Vue.  The in-cell overlay handles
+  // its own arrow keys directly in its keydown listener below, so we skip
+  // overlay events here to avoid double-handling.
   function _onDocPickerKey(e) {
+    if (e.target === overlay.el) return          // overlay is self-contained
     const target = _pickTarget()
     if (!target) return
     // Home/End/Shift+Home/Shift+End always move text caret. Never picker.
@@ -1028,6 +1125,7 @@ export function createGrid(canvas, { onSelect, onCommit, onInput, onCancel, getF
     // Cmd+Arrow / Cmd+Shift+Arrow — jump to data-region edge
     if (mod && isArrow) {
       e.preventDefault()
+      _tabAnchorCol = null
       const [dr, dc] = dirs[e.key]
       if (e.shiftKey) { const t = _jumpEdge(er, ec, dr, dc); extendSel(t.r, t.c) }
       else            { const t = _jumpEdge(r,  c,  dr, dc); moveSel(t.r,  t.c)  }
@@ -1050,6 +1148,7 @@ export function createGrid(canvas, { onSelect, onCommit, onInput, onCancel, getF
     // Shift+Arrow — extend selection one cell
     if (e.shiftKey && !mod && isArrow) {
       e.preventDefault()
+      _tabAnchorCol = null
       const [dr, dc] = dirs[e.key]
       extendSel(er + dr, ec + dc)
       return
@@ -1059,17 +1158,38 @@ export function createGrid(canvas, { onSelect, onCommit, onInput, onCancel, getF
 
     if ((e.key === 'Delete' || e.key === 'Backspace') && !mod) {
       e.preventDefault()
-      onCommit?.(cellId(r, c), '')
+      const { r0, c0, r1, c1 } = getSelRange()
+      if (r0 === r1 && c0 === c1) {
+        onCommit?.(cellId(r, c), '')
+      } else {
+        const cells = []
+        for (let dr = r0; dr <= r1; dr++)
+          for (let dc = c0; dc <= c1; dc++)
+            cells.push({ id: cellId(dr, dc), value: '' })
+        onBatchCommit?.(cells)
+        for (const { id } of cells) delete data[id]
+        render()
+      }
       return
     }
 
     if (e.key.length === 1 && !mod) { e.preventDefault(); showEditor(e.key); return }
 
-    const moves = {
-      ArrowUp:[r-1,c], ArrowDown:[r+1,c], ArrowLeft:[r,c-1], ArrowRight:[r,c+1],
-      Tab:[r,c+1], Enter:[r+1,c],
+    if (e.key === 'Tab') {
+      e.preventDefault()
+      if (_tabAnchorCol === null) _tabAnchorCol = c
+      moveSel(r, e.shiftKey ? c - 1 : c + 1)
+      return
     }
-    if (moves[e.key]) { e.preventDefault(); moveSel(...moves[e.key]) }
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      const anchorC = _tabAnchorCol ?? c
+      _tabAnchorCol = null
+      moveSel(r + 1, e.shiftKey ? r - 1 : anchorC)
+      return
+    }
+    const moves = { ArrowUp:[r-1,c], ArrowDown:[r+1,c], ArrowLeft:[r,c-1], ArrowRight:[r,c+1] }
+    if (moves[e.key]) { e.preventDefault(); _tabAnchorCol = null; moveSel(...moves[e.key]) }
   })
 
   // ── Public API ───────────────────────────────────────────────────────────────
@@ -1260,11 +1380,19 @@ export function createGrid(canvas, { onSelect, onCommit, onInput, onCancel, getF
     getCell: id => data[id] ?? '',
     getActiveCell: () => cellId(sel.r, sel.c),
     getSelection: getSelRange,
+    setSelection: setSelRange,
+    getPreMousedownSel,
+    moveTo: (r, c) => moveSel(r, c),
     getColWidth, setColWidth, getRowHeight, setRowHeight,
     shiftRowHeights, shiftColWidths, getHitRegion,
     setFreeze, setHiddenRows, setHiddenCols, getHiddenRows, getHiddenCols,
-    getColumnHeaderRects, getRow0Rect, onRender,
+    getColumnHeaderRects, getRow0Rect, getRowRect, onRender,
     setMarchingAnts,
+    // Pixel rect (canvas-local CSS coords) for one cell — drives popovers
+    // anchored to a cell, e.g. the auto-fill options menu.
+    getCellRect: (r, c) => ({ x: geo.colX(c), y: geo.rowY(r),
+                              width: geo.cw(c), height: geo.rh(r) }),
+    setDiffOverlay, setActiveDiffSheet,
     autoFitCol, autoFitRow,
     expandRows, getTotalRows, isNearBottom,
     setZoom, getZoom,

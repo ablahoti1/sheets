@@ -148,23 +148,13 @@ add_to_apps_screen = [
 # Scheduled Tasks
 # ---------------
 
-# scheduler_events = {
-# 	"all": [
-# 		"frappe_sheets_next.tasks.all"
-# 	],
-# 	"daily": [
-# 		"frappe_sheets_next.tasks.daily"
-# 	],
-# 	"hourly": [
-# 		"frappe_sheets_next.tasks.hourly"
-# 	],
-# 	"weekly": [
-# 		"frappe_sheets_next.tasks.weekly"
-# 	],
-# 	"monthly": [
-# 		"frappe_sheets_next.tasks.monthly"
-# 	],
-# }
+scheduler_events = {
+	"daily": [
+		# Prune unnamed Version rows older than 30 days.  Named versions
+		# (Sheet Version Name) are pinned and skipped — see versions.py.
+		"frappe_sheets_next.versions.prune_old_versions",
+	],
+}
 
 # Testing
 # -------

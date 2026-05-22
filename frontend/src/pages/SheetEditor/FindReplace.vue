@@ -57,11 +57,13 @@ function _buildMatches() {
   status.value = found.length ? `1 of ${found.length}` : 'No matches'
 }
 
-watch(findQuery, _buildMatches)
+watch(findQuery, () => {
+  _buildMatches()
+  if (matches.value.length) emit('navigateTo', matches.value[0])
+})
 
 function findNext() {
-  _buildMatches()
-  if (!matches.value.length) return
+  if (!matches.value.length) { _buildMatches(); if (!matches.value.length) return }
   matchIndex.value = (matchIndex.value + 1) % matches.value.length
   status.value = `${matchIndex.value + 1} of ${matches.value.length}`
   emit('navigateTo', matches.value[matchIndex.value])

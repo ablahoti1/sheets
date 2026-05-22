@@ -16,6 +16,9 @@ export function createOverlay(parent) {
     'letter-spacing:0.02em',
     `color:${COLORS.cellText}`,
     'outline:none',
+    'box-shadow:none',
+    '-webkit-appearance:none',
+    'appearance:none',
     'z-index:10',
   ].join(';')
   parent.appendChild(el)

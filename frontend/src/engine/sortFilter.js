@@ -1,7 +1,26 @@
 import { colLabel, parseCellId } from '../utils/cells.js'
 
+// Ranged, per-sheet sort & filter — Google-Sheets-style "basic filter":
+//   At most one filter per sheet, scoped to a rectangular range. The range's
+//   first row is treated as the header row; subsequent rows are the data the
+//   filter hides/shows. Columns outside the range never get a chevron and
+//   never participate in hiding. Inserts/deletes inside the range shift it.
+//
+//   Persisted shape:
+//     { [sheetName]: { range: { r0, c0, r1, c1 }, byCol: { [colIdx]: spec } } }
+//
+//   - range.r0 is the header row (chevrons go on these cells)
+//   - byCol keys are GLOBAL column indices; specs only apply to columns in
+//     [range.c0 .. range.c1]
 export function createSortFilter(sheet) {
-  const filterConfig = {}
+  const _byShet = {}                  // { [sheetName]: { range, byCol } }
+
+  function _entry(sn) {
+    if (!_byShet[sn]) _byShet[sn] = { range: null, byCol: {} }
+    return _byShet[sn]
+  }
+
+  function _inCols(colIdx, range) { return colIdx >= range.c0 && colIdx <= range.c1 }
 
   function _getRows() {
     const data = sheet.getRawData()
@@ -19,71 +38,172 @@ export function createSortFilter(sheet) {
     return rows
   }
 
-  // Sort data rows (row index 1+), keeping row 0 as the header.
-  function sort(colIndex, dir = 'asc') {
+  // Sort data rows of the active filter range (range.r0 stays as the header).
+  function sort(colIndex, dir = 'asc', sheetName) {
+    const range = getRange(sheetName)
+    if (!range || !_inCols(colIndex, range)) return
     const rows = _getRows()
-    if (rows.length <= 1) return
-
-    const maxC = rows.reduce((m, r) => Math.max(m, r.length - 1), 0)
-    const dataRows = rows.slice(1)   // rows 1+ are the data
-
-    dataRows.sort((a, b) => {
-      const av = a[colIndex] ?? '', bv = b[colIndex] ?? ''
-      if (av === '' && bv === '') return 0
-      if (av === '') return 1
-      if (bv === '') return -1
-      const an = parseFloat(av), bn = parseFloat(bv)
-      let cmp = (!isNaN(an) && !isNaN(bn)) ? an - bn : String(av).localeCompare(String(bv))
-      return dir === 'asc' ? cmp : -cmp
-    })
-
-    // Write back sorted data starting at row 2 (1-indexed), row 0 stays untouched.
-    for (let i = 0; i < dataRows.length; i++) {
-      for (let c = 0; c <= maxC; c++) {
-        sheet.setCell(colLabel(c) + (i + 2), dataRows[i][c] ?? '')
+    const headerR = range.r0
+    if (range.r1 <= headerR) return
+    const block = []
+    for (let r = headerR + 1; r <= range.r1; r++) block.push(rows[r] || [])
+    block.sort((a, b) => _cmp(a[colIndex] ?? '', b[colIndex] ?? '', dir))
+    for (let i = 0; i < block.length; i++) {
+      for (let c = range.c0; c <= range.c1; c++) {
+        sheet.setCell(colLabel(c) + (headerR + 2 + i), block[i][c] ?? '')
       }
     }
   }
 
-  function setFilter(colId, spec) {
-    filterConfig[colId] = spec
+  function _cmp(av, bv, dir) {
+    if (av === '' && bv === '') return 0
+    if (av === '') return 1
+    if (bv === '') return -1
+    const an = parseFloat(av), bn = parseFloat(bv)
+    const cmp = (!isNaN(an) && !isNaN(bn)) ? an - bn : String(av).localeCompare(String(bv))
+    return dir === 'asc' ? cmp : -cmp
   }
 
-  function clearFilter(colId) {
-    delete filterConfig[colId]
+  // ── Range management ──────────────────────────────────────────────────────
+  function setRange(range, sheetName) {
+    const e = _entry(sheetName)
+    e.range = range ? { ...range } : null
+    if (!range) { e.byCol = {}; return }
+    // Drop column specs that fall outside the new range bounds.
+    for (const k of Object.keys(e.byCol)) {
+      if (!_inCols(parseInt(k, 10), e.range)) delete e.byCol[k]
+    }
   }
 
-  function clearAll() {
-    for (const k of Object.keys(filterConfig)) delete filterConfig[k]
+  function getRange(sheetName) { return _byShet[sheetName]?.range || null }
+
+  function clearRange(sheetName) {
+    if (_byShet[sheetName]) _byShet[sheetName] = { range: null, byCol: {} }
   }
 
-  // Returns a Set of row indices (0-based) that should be hidden.
-  // Row 0 is always the header — never hidden.
-  function computeHiddenRows() {
+  function hasFilter(sheetName) { return !!getRange(sheetName) }
+
+  // ── Per-column specs (within the range) ───────────────────────────────────
+  function setFilter(colId, spec, sheetName) {
+    const e = _entry(sheetName)
+    if (!e.range || !_inCols(colId, e.range)) return
+    e.byCol[colId] = spec
+  }
+
+  function clearFilter(colId, sheetName) {
+    if (_byShet[sheetName]) delete _byShet[sheetName].byCol[colId]
+  }
+
+  function clearAll(sheetName) {
+    if (_byShet[sheetName]) _byShet[sheetName].byCol = {}
+  }
+
+  function getFilterConfig(sheetName) {
+    return _byShet[sheetName]?.byCol || {}
+  }
+
+  function _rowFails(row, entries) {
+    for (const [colId, spec] of entries) {
+      const cellVal = String(row?.[parseInt(colId)] ?? '')
+      const specVal = String(spec.value ?? '')
+      const op      = spec.operator
+      if      (op === 'contains'  && !cellVal.toLowerCase().includes(specVal.toLowerCase())) return true
+      else if (op === 'equals'    && cellVal !== specVal)                                    return true
+      else if (op === 'gt'        && !(parseFloat(cellVal) > parseFloat(specVal)))           return true
+      else if (op === 'lt'        && !(parseFloat(cellVal) < parseFloat(specVal)))           return true
+      else if (op === 'empty'     && cellVal !== '')                                         return true
+      else if (op === 'notempty'  && cellVal === '')                                         return true
+    }
+    return false
+  }
+
+  // Returns a Set of row indices that should be hidden in the given sheet.
+  // Only rows inside [range.r0+1, range.r1] are ever hidden — rows outside the
+  // filter range stay visible regardless of specs.
+  function computeHiddenRows(sheetName) {
     const hidden = new Set()
-    const entries = Object.entries(filterConfig)
+    const e = _byShet[sheetName]
+    if (!e?.range) return hidden
+    const entries = Object.entries(e.byCol)
     if (!entries.length) return hidden
-
     const rows = _getRows()
-    for (let ri = 1; ri < rows.length; ri++) {   // start at 1 — row 0 is header
-      for (const [colId, spec] of entries) {
-        const cellVal = String(rows[ri]?.[parseInt(colId)] ?? '')
-        const specVal = String(spec.value ?? '')
-        const op      = spec.operator
-        let fails = false
-        if      (op === 'contains'  && !cellVal.toLowerCase().includes(specVal.toLowerCase())) fails = true
-        else if (op === 'equals'    && cellVal !== specVal)                                    fails = true
-        else if (op === 'gt'        && !(parseFloat(cellVal) > parseFloat(specVal)))           fails = true
-        else if (op === 'lt'        && !(parseFloat(cellVal) < parseFloat(specVal)))           fails = true
-        else if (op === 'empty'     && cellVal !== '')                                         fails = true
-        else if (op === 'notempty'  && cellVal === '')                                         fails = true
-        if (fails) { hidden.add(ri); break }
-      }
+    const start = e.range.r0 + 1, end = Math.min(e.range.r1, rows.length - 1)
+    for (let ri = start; ri <= end; ri++) {
+      if (_rowFails(rows[ri], entries)) hidden.add(ri)
     }
     return hidden
   }
 
-  function getFilterConfig() { return filterConfig }
+  // ── Row / column structural shifts (called from SheetEditor handlers) ────
+  function insertRow(atRow, sheetName) {
+    const e = _byShet[sheetName]
+    if (!e?.range) return
+    if (atRow <= e.range.r0)      e.range.r0++
+    if (atRow <= e.range.r1)      e.range.r1++
+  }
 
-  return { sort, setFilter, clearFilter, clearAll, computeHiddenRows, getFilterConfig }
+  function deleteRow(atRow, sheetName) {
+    const e = _byShet[sheetName]
+    if (!e?.range) return
+    if (atRow <  e.range.r0)      e.range.r0--
+    if (atRow <= e.range.r1)      e.range.r1--
+    if (e.range.r1 < e.range.r0) clearRange(sheetName)
+  }
+
+  function insertCol(atCol, sheetName) {
+    const e = _byShet[sheetName]
+    if (!e?.range) return
+    if (atCol <= e.range.c0)      e.range.c0++
+    if (atCol <= e.range.c1)      e.range.c1++
+    e.byCol = _shiftByColKeys(e.byCol, atCol, +1)
+  }
+
+  function deleteCol(atCol, sheetName) {
+    const e = _byShet[sheetName]
+    if (!e?.range) return
+    if (atCol <  e.range.c0)      e.range.c0--
+    if (atCol <= e.range.c1)      e.range.c1--
+    if (e.range.c1 < e.range.c0) { clearRange(sheetName); return }
+    delete e.byCol[atCol]
+    e.byCol = _shiftByColKeys(e.byCol, atCol, -1)
+  }
+
+  function _shiftByColKeys(byCol, atCol, delta) {
+    const next = {}
+    for (const [k, v] of Object.entries(byCol)) {
+      const ci = parseInt(k, 10)
+      if (delta > 0 && ci >= atCol)      next[ci + 1] = v
+      else if (delta < 0 && ci > atCol)  next[ci - 1] = v
+      else                                next[ci] = v
+    }
+    return next
+  }
+
+  // ── Sheet-level operations ────────────────────────────────────────────────
+  function renameSheet(oldName, newName) {
+    if (!_byShet[oldName] || _byShet[newName] || oldName === newName) return
+    _byShet[newName] = _byShet[oldName]
+    delete _byShet[oldName]
+  }
+
+  function deleteSheet(name) { delete _byShet[name] }
+
+  function duplicateSheet(srcName, newName) {
+    if (_byShet[newName]) return
+    _byShet[newName] = JSON.parse(JSON.stringify(_byShet[srcName] || { range: null, byCol: {} }))
+  }
+
+  function snapshot() { return JSON.parse(JSON.stringify(_byShet)) }
+
+  function restore(snap) {
+    for (const k of Object.keys(_byShet)) delete _byShet[k]
+    if (snap) for (const [k, v] of Object.entries(snap)) _byShet[k] = v
+  }
+
+  return {
+    sort, setFilter, clearFilter, clearAll, getFilterConfig, computeHiddenRows,
+    setRange, getRange, clearRange, hasFilter,
+    insertRow, deleteRow, insertCol, deleteCol,
+    renameSheet, deleteSheet, duplicateSheet, snapshot, restore,
+  }
 }

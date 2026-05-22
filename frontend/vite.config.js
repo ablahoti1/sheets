@@ -3,6 +3,11 @@ import vue from '@vitejs/plugin-vue'
 import frappeuiPlugin from 'frappe-ui/vite'
 
 export default defineConfig({
+  test: {
+    globals: true,
+    environment: 'node',
+    include: ['src/**/*.test.js'],
+  },
   plugins: [
     vue(),
     frappeuiPlugin({

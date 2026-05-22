@@ -2,7 +2,8 @@ import { ref } from 'vue'
 
 // getGrid is a getter fn () => grid. onSwitch is called after every sheet switch
 // so the caller can repopulate canvas data for the new sheet.
-export function useSheetTabs({ sheet, formats, getGrid, activeCell, formulaValue, refreshActiveFormat, onSwitch }) {
+// extras: additional engines with renameSheet/duplicateSheet/deleteSheet/reorderSheets
+export function useSheetTabs({ sheet, formats, extras = [], getGrid, activeCell, formulaValue, refreshActiveFormat, onSwitch }) {
   const sheetNames   = ref(sheet.getSheetNames())
   const currentSheet = ref(sheet.getCurrentSheet())
 
@@ -12,6 +13,7 @@ export function useSheetTabs({ sheet, formats, getGrid, activeCell, formulaValue
     currentSheet.value = sheet.getCurrentSheet()
     activeCell.value   = 'A1'
     formulaValue.value = sheet.getCell('A1')
+    getGrid()?.moveTo(0, 0)
     refreshActiveFormat()
     onSwitch?.()
   }
@@ -31,6 +33,7 @@ export function useSheetTabs({ sheet, formats, getGrid, activeCell, formulaValue
     const ok = sheet.renameSheet(oldName, newName)
     if (!ok) return false
     formats?.renameSheet(oldName, newName)
+    extras.forEach(e => e?.renameSheet?.(oldName, newName))
     sheetNames.value   = sheet.getSheetNames()
     currentSheet.value = sheet.getCurrentSheet()
     return true
@@ -43,6 +46,7 @@ export function useSheetTabs({ sheet, formats, getGrid, activeCell, formulaValue
     while (existing.includes(copy)) { n++; copy = `${srcName} copy ${n}` }
     sheet.duplicateSheet(srcName, copy)
     formats?.duplicateSheet(srcName, copy)
+    extras.forEach(e => e?.duplicateSheet?.(srcName, copy))
     sheetNames.value = sheet.getSheetNames()
     switchSheet(copy)
     return copy
@@ -54,6 +58,7 @@ export function useSheetTabs({ sheet, formats, getGrid, activeCell, formulaValue
     const ok = sheet.deleteSheet(name)
     if (!ok) return false
     formats?.deleteSheet(name)
+    extras.forEach(e => e?.deleteSheet?.(name))
     sheetNames.value = sheet.getSheetNames()
     if (wasCurrent) switchSheet(sheet.getCurrentSheet())
     else            currentSheet.value = sheet.getCurrentSheet()
@@ -63,6 +68,7 @@ export function useSheetTabs({ sheet, formats, getGrid, activeCell, formulaValue
   function reorderSheets(orderedNames) {
     sheet.reorderSheets(orderedNames)
     formats?.reorderSheets(orderedNames)
+    extras.forEach(e => e?.reorderSheets?.(orderedNames))
     sheetNames.value = sheet.getSheetNames()
   }
 

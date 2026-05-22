@@ -9,6 +9,80 @@ MAX_SHEETS_DATA_BYTES = 5 * 1024 * 1024
 MAX_TITLE_LEN = 280
 
 
+# ── Presence ──────────────────────────────────────────────────────────────────
+
+@frappe.whitelist()
+def ping_presence(name: str) -> None:
+	"""Broadcast caller's identity to all clients watching this sheet."""
+	user = frappe.session.user
+	identity = _user_identity(user)
+	frappe.publish_realtime(
+		"sheet_presence",
+		{"sheet": name, "user": user, **identity},
+		after_commit=False,
+	)
+
+
+# ── Real-time collaboration ───────────────────────────────────────────────────
+
+@frappe.whitelist()
+def broadcast_op(name: str, op: str) -> None:
+	"""Broadcast a cell-op JSON string to all clients watching this sheet."""
+	frappe.has_permission("Sheet", doc=name, throw=True)
+	frappe.publish_realtime(
+		"sheet_op",
+		{"sheet": name, "user": frappe.session.user, "op": op},
+		after_commit=False,
+	)
+
+
+@frappe.whitelist()
+def broadcast_cursor(name: str, r: int, c: int, sub_sheet: str) -> None:
+	"""Broadcast cursor position to all clients watching this sheet."""
+	user = frappe.session.user
+	identity = _user_identity(user)
+	frappe.publish_realtime(
+		"sheet_cursor",
+		{"sheet": name, "user": user, **identity,
+		 "r": int(r), "c": int(c), "sub_sheet": sub_sheet},
+		after_commit=False,
+	)
+
+
+# ── Sharing ───────────────────────────────────────────────────────────────────
+
+@frappe.whitelist()
+def get_sheet_shares(name: str) -> list:
+	"""Return users who have explicit share access to this sheet."""
+	frappe.has_permission("Sheet", doc=name, throw=True)
+	rows = frappe.get_all(
+		"DocShare",
+		filters={"share_doctype": "Sheet", "share_name": name},
+		fields=["user", "read", "write", "share"],
+	)
+	for row in rows:
+		identity = _user_identity(row["user"])
+		row.update(identity)
+		row["user_image"] = frappe.db.get_value("User", row["user"], "user_image") or ""
+	return rows
+
+
+@frappe.whitelist()
+def share_sheet(name: str, user: str, write: int = 0) -> dict:
+	frappe.has_permission("Sheet", doc=name, throw=True)
+	if not frappe.db.exists("User", user):
+		frappe.throw(f"User {user} not found")
+	frappe.share.add("Sheet", name, user, write=int(write), share=0, notify=True)
+	return {"status": "ok"}
+
+
+@frappe.whitelist()
+def unshare_sheet(name: str, user: str) -> dict:
+	frappe.has_permission("Sheet", doc=name, throw=True)
+	frappe.share.remove("Sheet", name, user)
+	return {"status": "ok"}
+
+
 @frappe.whitelist()
 def list_sheets() -> list:
 	return frappe.get_list(
@@ -75,6 +149,15 @@ def duplicate_sheet(name: str) -> str:
 
 
 # ── internal helpers ──────────────────────────────────────────────────────────
+
+
+def _user_identity(user: str) -> dict:
+	"""Return full_name, initials, and user_image for the given user."""
+	full_name = frappe.db.get_value("User", user, "full_name") or user
+	user_image = frappe.db.get_value("User", user, "user_image") or ""
+	parts = full_name.split()
+	initials = (parts[0][0] + (parts[-1][0] if len(parts) > 1 else "")).upper()
+	return {"full_name": full_name, "initials": initials, "user_image": user_image}
 
 
 def _validate_payload(title: str, sheets_data: str) -> None:
