@@ -22,6 +22,10 @@
         </svg>
         <span class="home-brand-name">Frappe Sheets</span>
       </div>
+      <!-- Inline error banner — destructive actions (delete / duplicate)
+           use this instead of `window.alert` so the chrome stays in-app
+           and Espresso-themed. Auto-clears after 4 s. -->
+      <Badge v-if="errorMessage" theme="red" variant="subtle" size="sm" :label="errorMessage" />
       <FormControl
         type="text"
         size="sm"
@@ -33,6 +37,28 @@
           <FeatherIcon name="search" class="home-search-icon" />
         </template>
       </FormControl>
+      <!-- View-mode toggle: grid (card) vs list. State persists in
+           localStorage so the user's choice survives reloads. Uses two
+           Frappe UI Buttons inside a thin segmented frame; the active
+           one switches to `subtle` so it inverts against the row. -->
+      <div class="home-viewtoggle" role="tablist" aria-label="View mode">
+        <Button
+          :variant="viewMode === 'grid' ? 'subtle' : 'ghost'"
+          size="sm" icon="grid"
+          tooltip="Grid view"
+          role="tab"
+          :aria-selected="viewMode === 'grid'"
+          @click="setViewMode('grid')"
+        />
+        <Button
+          :variant="viewMode === 'list' ? 'subtle' : 'ghost'"
+          size="sm" icon="list"
+          tooltip="List view"
+          role="tab"
+          :aria-selected="viewMode === 'list'"
+          @click="setViewMode('list')"
+        />
+      </div>
       <Button variant="solid" @click="emit('new')">New Spreadsheet</Button>
     </div>
 
@@ -66,7 +92,7 @@
       </div>
 
       <!-- Sheet grid -->
-      <div v-else class="home-grid">
+      <div v-else-if="viewMode === 'grid'" class="home-grid">
         <div
           v-for="sheet in filteredSheets"
           :key="sheet.name"
@@ -109,6 +135,36 @@
           </div>
         </div>
       </div>
+
+      <!-- Sheet list -->
+      <div v-else class="home-list">
+        <div class="home-list-head">
+          <div class="home-list-col home-list-col--title">Name</div>
+          <div class="home-list-col home-list-col--owner">Owner</div>
+          <div class="home-list-col home-list-col--date">Last modified</div>
+          <div class="home-list-col home-list-col--actions" aria-hidden="true"></div>
+        </div>
+        <div
+          v-for="sheet in filteredSheets"
+          :key="sheet.name"
+          class="home-list-row"
+          @click="emit('open', sheet.name)"
+        >
+          <div class="home-list-col home-list-col--title">
+            <FeatherIcon name="file-text" class="home-list-icon" />
+            <span class="home-list-title">{{ sheet.title }}</span>
+          </div>
+          <div class="home-list-col home-list-col--owner">{{ shortOwner(sheet.owner) }}</div>
+          <div class="home-list-col home-list-col--date">{{ formatDate(sheet.modified) }}</div>
+          <div class="home-list-col home-list-col--actions" @click.stop>
+            <Dropdown :options="cardActions(sheet)" placement="right">
+              <template #default="{ open }">
+                <Button :variant="open ? 'subtle' : 'ghost'" size="sm" icon="more-vertical" tooltip="Actions" />
+              </template>
+            </Dropdown>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- Rename dialog -->
@@ -147,7 +203,7 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { Button, Dialog, Spinner, FormControl, FeatherIcon, Dropdown } from 'frappe-ui'
+import { Badge, Button, Dialog, Spinner, FormControl, FeatherIcon, Dropdown } from 'frappe-ui'
 import { call } from '../utils/api.js'
 
 const emit = defineEmits(['open', 'new'])
@@ -155,6 +211,40 @@ const emit = defineEmits(['open', 'new'])
 const sheets       = ref([])
 const loading      = ref(true)
 const searchQuery  = ref('')
+
+// Inline error banner used by the destructive actions (delete / duplicate).
+// Mirrors the editor's `saveError` pattern — Frappe UI Badge, auto-dismissed
+// after a few seconds — so we never reach for `window.alert`.
+const errorMessage = ref('')
+function _flashError(msg) {
+  errorMessage.value = msg
+  setTimeout(() => { if (errorMessage.value === msg) errorMessage.value = '' }, 4000)
+}
+
+// Persisted view preference. Default to grid because the previews are the
+// existing visual identity of the page; users who want density opt in.
+const VIEW_KEY = 'frappe_sheets:home_view_mode'
+const viewMode = ref(_readViewMode())
+
+function _readViewMode() {
+  try {
+    const v = localStorage.getItem(VIEW_KEY)
+    return v === 'list' || v === 'grid' ? v : 'grid'
+  } catch (_) {
+    return 'grid'
+  }
+}
+
+function setViewMode(mode) {
+  if (mode !== 'grid' && mode !== 'list') return
+  viewMode.value = mode
+  try { localStorage.setItem(VIEW_KEY, mode) } catch (_) { /* private mode */ }
+}
+
+function shortOwner(u) {
+  if (!u) return ''
+  return u.includes('@') ? u.split('@')[0] : u
+}
 
 // Filter by title, case-insensitive substring match. Sort order from the API
 // (modified desc) is preserved by `filter`.
@@ -216,6 +306,9 @@ async function doDelete() {
     await call('frappe_sheets_next.api.delete_sheet', { name: deleteTarget.value.name })
     sheets.value = sheets.value.filter(s => s.name !== deleteTarget.value.name)
     showDeleteDialog.value = false
+  } catch (err) {
+    console.error('Delete failed:', err)
+    _flashError(err?.message || 'Delete failed')
   } finally {
     deleting.value = false
   }
@@ -247,7 +340,12 @@ async function duplicate(sheet) {
     await call('frappe_sheets_next.api.duplicate_sheet', { name: sheet.name })
     // Refresh the listing so the new doc shows up with its modified timestamp.
     await fetchSheets()
-  } catch (_) { /* swallow; user can retry */ }
+  } catch (err) {
+    // Surface the failure instead of silently swallowing — keeps "nothing
+    // happened" from being indistinguishable from server errors.
+    console.error('Duplicate failed:', err)
+    _flashError(err?.message || 'Duplicate failed')
+  }
 }
 </script>
 
@@ -256,7 +354,10 @@ async function duplicate(sheet) {
 .home {
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
+  /* The global stylesheet locks <html/body/#root> at 100% with overflow:hidden
+     (the editor wants pixel-perfect viewport control). So Home owns its own
+     scroll: a fixed-height column where the body region scrolls. */
+  height: 100vh;
   background: var(--surface-gray-1);
   font-family: InterVar, ui-sans-serif, system-ui, sans-serif;
   color: var(--ink-gray-9);
@@ -294,10 +395,18 @@ async function duplicate(sheet) {
 
 .home-body {
   flex: 1;
+  min-height: 0;          /* lets flex children own their own scroll */
+  overflow-y: auto;       /* the actual scroll container */
   padding: 40px 32px;
-  max-width: 1200px;
   width: 100%;
-  margin: 0 auto;
+}
+
+/* Inner constraint so the grid/list don't stretch full-width on big monitors
+   but the scrollbar still tracks the full viewport on the right edge. */
+.home-body > * {
+  max-width: 1200px;
+  margin-left: auto;
+  margin-right: auto;
 }
 
 /* Loading / empty */
@@ -389,5 +498,87 @@ async function duplicate(sheet) {
   letter-spacing: .02em;
   color: var(--ink-gray-7);
   margin: 0;
+}
+
+/* ── View-mode toggle ──────────────────────────────────────────────────────
+   Segmented control: thin frame around two Frappe UI Buttons. The Buttons
+   own their own padding/typography; the wrapper just gives them the
+   shared border + 2px inner gutter that makes them read as one control. */
+.home-viewtoggle {
+  display: inline-flex;
+  gap: 2px;
+  border: 1px solid var(--outline-gray-2);
+  border-radius: 8px;
+  padding: 2px;
+  background: var(--surface-white);
+  flex-shrink: 0;
+}
+
+/* ── List view ─────────────────────────────────────────────────────────────
+   Dense table-like rendering. Four-column grid mirrors the header row so the
+   columns line up without table semantics (we want row-level click + the
+   trailing actions menu to live in a flex child, not a `<td>`). */
+.home-list {
+  background: var(--surface-white);
+  border: 1px solid var(--outline-gray-2);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.home-list-head,
+.home-list-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 160px 160px 48px;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 16px;
+}
+.home-list-head {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--ink-gray-5);
+  border-bottom: 1px solid var(--outline-gray-2);
+  background: var(--surface-gray-1);
+}
+.home-list-row {
+  cursor: pointer;
+  border-bottom: 1px solid var(--outline-gray-2);
+  transition: background-color .1s;
+}
+.home-list-row:last-child { border-bottom: 0; }
+.home-list-row:hover      { background: var(--surface-gray-2); }
+.home-list-col            { min-width: 0; }
+.home-list-col--title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink-gray-9);
+  overflow: hidden;
+}
+.home-list-icon {
+  width: 14px;
+  height: 14px;
+  color: var(--ink-gray-5);
+  flex-shrink: 0;
+}
+.home-list-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.home-list-col--owner,
+.home-list-col--date {
+  font-size: 12px;
+  color: var(--ink-gray-6);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.home-list-col--actions {
+  display: flex;
+  justify-content: flex-end;
 }
 </style>

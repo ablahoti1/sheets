@@ -68,10 +68,13 @@ describe('openCanvasContextMenu', () => {
     expect(contextMenu.mode).toBe('rowHeader')
   })
 
-  it('clamps x to viewport width - 224', () => {
+  it('clamps x to viewport width - 260 (estimated menu width)', () => {
+    // 260 was widened from 224 to account for the longest "Split text to
+    // columns" item; clamping ensures right-edge clicks never push the menu
+    // off-screen.
     const { contextMenu, openCanvasContextMenu } = makeCtx()
     openCanvasContextMenu(fakeEvent({ x: 1300, y: 100 }))
-    expect(contextMenu.x).toBe(VP.width - 224)
+    expect(contextMenu.x).toBe(VP.width - 260)
   })
 
   it('sets useBottom=true when near viewport bottom (cell mode ~620px est)', () => {

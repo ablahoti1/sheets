@@ -1,3 +1,5 @@
+import { vi } from 'vitest'
+
 export function createMockCtx() {
   return {
     save:        vi.fn(),

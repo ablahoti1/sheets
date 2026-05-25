@@ -57,3 +57,6 @@ jspm_packages/
 # Internal planning docs (not for distribution)
 .internal/
 frappe_sheets_next/public/node_modules
+
+# Claude Code workspace settings (per-machine, not for distribution)
+.claude/

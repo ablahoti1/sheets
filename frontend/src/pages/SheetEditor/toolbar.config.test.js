@@ -66,9 +66,12 @@ describe('buildMoreToolbarOptions', () => {
     }
   }
 
-  it('returns 6 groups', () => {
+  it('returns 7 groups (Format, Numbers, Cells, Borders, View, Insert, Workbook)', () => {
     const opts = buildMoreToolbarOptions(makeHandlers())
-    expect(opts).toHaveLength(6)
+    expect(opts).toHaveLength(7)
+    expect(opts.map(g => g.group)).toEqual(
+      ['Format', 'Numbers', 'Cells', 'Borders', 'View', 'Insert', 'Workbook'],
+    )
   })
 
   it('Strikethrough calls toggleFmt("strikethrough")', () => {

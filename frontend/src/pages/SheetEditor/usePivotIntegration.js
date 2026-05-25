@@ -31,6 +31,12 @@ export function usePivotIntegration({
   // without re-running the full computePivot() on every canvas render frame.
   const _pivotRowCount    = ref(0)
 
+  // Every engine mutation (including restore on page reload) bumps the version,
+  // so reactive computeds like `activePivotConfig` re-evaluate. Without this,
+  // the edit FAB stays hidden after a reload because `pivot.restore()` runs
+  // silently and the cached computed never sees the new pivot list.
+  pivot.setOnChange?.(() => { pivotVersion.value++ })
+
   // Reading pivotVersion forces Vue to re-evaluate on every add/update/delete.
   const activePivotConfig = computed(() => {
     void pivotVersion.value
@@ -97,7 +103,6 @@ export function usePivotIntegration({
     const cfg = activePivotConfig.value
     if (!cfg) return
     pivot.remove(cfg.id)
-    pivotVersion.value++
   }
 
   function _clearPivotOutputSheet(sheetName) {
@@ -142,7 +147,6 @@ export function usePivotIntegration({
       _applyPivotOutput({ ...config, outputSheet })
       switchSheet(outputSheet)
     }
-    pivotVersion.value++
     repopulateGrid()
     history.push(); isDirty.value = true
   }

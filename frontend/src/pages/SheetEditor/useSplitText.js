@@ -14,6 +14,7 @@ import { cellId }                            from '../../utils/cells.js'
  * @param {{
  *   getSheet:       () => object,
  *   getGrid:        () => object | null,
+ *   getGridWrap:    () => HTMLElement | null,
  *   contextMenu:    { open: boolean },
  *   currentSheet:   import('vue').Ref<string>,
  *   queueOp:        (op: object) => void,
@@ -27,6 +28,7 @@ import { cellId }                            from '../../utils/cells.js'
 export function useSplitText({
   getSheet,
   getGrid,
+  getGridWrap,
   contextMenu,
   currentSheet,
   queueOp,
@@ -60,8 +62,20 @@ export function useSplitText({
     splitText.original  = null
     splitText.writeRect = null
 
-    const rect           = grid.getCellRect?.(range.r1, range.c0)
-    splitText.anchor     = rect ? { x: rect.x, y: rect.y + rect.height } : null
+    const rect = grid.getCellRect?.(range.r0, range.c0)
+    if (rect) {
+      const POP_W = 248, POP_H = 340
+      const wrap  = getGridWrap?.()
+      const wrapW = wrap?.offsetWidth  ?? Infinity
+      const wrapH = wrap?.offsetHeight ?? Infinity
+      const ax = Math.min(rect.x, wrapW - POP_W - 4)
+      const ay = rect.y + rect.height + POP_H > wrapH
+               ? rect.y - POP_H
+               : rect.y + rect.height
+      splitText.anchor = { x: Math.max(0, ax), y: Math.max(0, ay) }
+    } else {
+      splitText.anchor = null
+    }
     splitText.open       = true
 
     // Show a live preview immediately so the user can compare separators.

@@ -6,14 +6,18 @@ import { usePivotIntegration } from './usePivotIntegration.js'
 
 function fakePivotEngine() {
   const store = []
-  let nextId = 1
+  let nextId  = 1
+  let onChange = null
+  const notify = () => onChange?.()
   return {
     list:         ()       => [...store],
     get:          (id)     => store.find(p => p.id === id) ?? null,
-    add:          (config) => { store.push({ ...config, id: String(nextId++) }) },
-    update:       (id, cfg)=> { const i = store.findIndex(p => p.id === id); if (i >= 0) store[i] = { ...cfg, id } },
-    remove:       (id)     => { const i = store.findIndex(p => p.id === id); if (i >= 0) store.splice(i, 1) },
+    add:          (config) => { store.push({ ...config, id: String(nextId++) }); notify() },
+    update:       (id, cfg)=> { const i = store.findIndex(p => p.id === id); if (i >= 0) { store[i] = { ...cfg, id }; notify() } },
+    remove:       (id)     => { const i = store.findIndex(p => p.id === id); if (i >= 0) { store.splice(i, 1); notify() } },
+    restore:      (data)   => { store.splice(0); (data?.pivots ? Object.values(data.pivots) : []).forEach(p => store.push({ ...p })); notify() },
     affectsPivot: (sh)     => store.some(p => p.sourceSheet === sh),
+    setOnChange:  (cb)     => { onChange = cb },
   }
 }
 
@@ -147,6 +151,24 @@ describe('onPivotConfirm — edit', () => {
     onPivotConfirm({ id, rows: ['B'], cols: [], values: [], sourceSheet: 'Sheet1' })
     expect(pivot.get(id).rows).toEqual(['B'])
     expect(deps.switchSheet).toHaveBeenCalledWith('PivotOut')
+  })
+})
+
+// ── restore (page reload) ─────────────────────────────────────────────────────
+
+describe('activePivotConfig after engine restore', () => {
+  it('reflects pivots loaded via pivot.restore() on the current output sheet', () => {
+    // Reproduces the post-reload bug: usePivotIntegration must observe pivots
+    // hydrated by usePersistence.loadSheet() and surface the edit FAB without
+    // requiring a manual sheet switch.
+    const { deps, pivot, currentSheet } = makeDeps()
+    const { activePivotConfig } = usePivotIntegration(deps)
+
+    currentSheet.value = 'PivotOut'
+    expect(activePivotConfig.value).toBeNull()
+
+    pivot.restore({ pivots: { p1: { id: 'p1', outputSheet: 'PivotOut', sourceSheet: 'Sheet1', rows: ['A'], cols: [], values: [] } } })
+    expect(activePivotConfig.value?.outputSheet).toBe('PivotOut')
   })
 })
 

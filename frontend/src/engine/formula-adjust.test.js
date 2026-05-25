@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { adjustFormula } from './formula-adjust.js'
+import { adjustFormula, renameSheetInFormula } from './formula-adjust.js'
 
 describe('adjustFormula', () => {
   it('returns non-formula values unchanged', () => {
@@ -70,5 +70,44 @@ describe('adjustFormula', () => {
     it('leaves absolute cross-sheet ref unchanged', () => {
       expect(adjustFormula('=Sheet2!$A$1', 3, 3)).toBe('=Sheet2!$A$1')
     })
+  })
+})
+
+describe('renameSheetInFormula', () => {
+  it('rewrites a single cross-sheet ref', () => {
+    expect(renameSheetInFormula('=Sheet2!A1', 'Sheet2', 'Data')).toBe('=Data!A1')
+  })
+
+  it('rewrites every occurrence in a complex formula', () => {
+    expect(renameSheetInFormula('=Sheet2!A1+Sheet2!B2+Other!C3', 'Sheet2', 'X'))
+      .toBe('=X!A1+X!B2+Other!C3')
+  })
+
+  it('rewrites a cross-sheet range', () => {
+    expect(renameSheetInFormula('=SUM(Sheet2!A1:Sheet2!B3)', 'Sheet2', 'X'))
+      .toBe('=SUM(X!A1:X!B3)')
+  })
+
+  it('does not touch unrelated sheet names', () => {
+    expect(renameSheetInFormula('=Sheet22!A1+Sheet2!B1', 'Sheet2', 'X'))
+      .toBe('=Sheet22!A1+X!B1')
+  })
+
+  it('handles quoted names with spaces', () => {
+    expect(renameSheetInFormula("='Old Sheet'!A1", 'Old Sheet', 'New One'))
+      .toBe("='New One'!A1")
+  })
+
+  it('upgrades unquoted → quoted when the new name needs it', () => {
+    expect(renameSheetInFormula('=Old!A1', 'Old', 'New Sheet'))
+      .toBe("='New Sheet'!A1")
+  })
+
+  it('no-op when names match', () => {
+    expect(renameSheetInFormula('=Sheet2!A1', 'Sheet2', 'Sheet2')).toBe('=Sheet2!A1')
+  })
+
+  it('no-op on non-formula strings', () => {
+    expect(renameSheetInFormula('Sheet2!A1', 'Sheet2', 'X')).toBe('Sheet2!A1')
   })
 })

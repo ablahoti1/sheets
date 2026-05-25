@@ -8,7 +8,7 @@ const MENU_HEIGHT_EST = { cell: 620, colHeader: 240, rowHeader: 240 }
  */
 export function useContextMenu({ getGrid, getViewport = () => ({ width: window.innerWidth, height: window.innerHeight }) }) {
   const contextMenu = reactive({
-    open: false, x: 0, y: 0, bottom: 0, useBottom: false,
+    open: false, x: 0, y: 0, bottom: 0, useBottom: false, maxH: 0,
     targetRow: 0, targetCol: 0, mode: 'cell',
   })
 
@@ -42,10 +42,12 @@ export function useContextMenu({ getGrid, getViewport = () => ({ width: window.i
 
     const vp = getViewport()
     const spaceBelow = vp.height - e.clientY
-    contextMenu.useBottom = spaceBelow < (MENU_HEIGHT_EST[contextMenu.mode] ?? 300)
-    contextMenu.x      = Math.min(e.clientX, vp.width - 224)
+    const spaceAbove = e.clientY
+    contextMenu.useBottom = spaceBelow < (MENU_HEIGHT_EST[contextMenu.mode] ?? 300) && spaceAbove > spaceBelow
+    contextMenu.x      = Math.min(e.clientX, vp.width - 260)
     contextMenu.y      = e.clientY
     contextMenu.bottom = vp.height - e.clientY
+    contextMenu.maxH   = (contextMenu.useBottom ? spaceAbove : spaceBelow) - 8
     contextMenu.open   = true
   }
 

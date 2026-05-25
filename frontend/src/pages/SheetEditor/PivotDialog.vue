@@ -1,11 +1,25 @@
 <template>
-  <Dialog v-model="show" :options="{ title: pivotId ? 'Edit pivot table' : 'Create pivot table', size: 'lg' }">
+  <Dialog
+    v-model="show"
+    :options="{ title: pivotId ? 'Edit pivot table' : 'Create pivot table', size: 'lg' }"
+    :disable-outside-click-to-close="pickerOpenCount > 0"
+  >
     <template #body-content>
 
       <!-- ── Source range ─────────────────────────────────────────────────── -->
       <div class="pv-section">
-        <p class="pv-label">Source range</p>
+        <p class="pv-label">Source</p>
         <div class="pv-range-row">
+          <!-- Source sheet picker. Auto-derived but explicit so the user
+               can recover an existing pivot whose `sourceSheet` got
+               corrupted to its own output-sheet name (legacy bug). -->
+          <FormControl
+            type="select"
+            v-model="sourceSheetInput"
+            :options="sheetOptions"
+            class="pv-source-sheet"
+            @update:model-value="detectFields"
+          />
           <FormControl
             v-model="rangeInput"
             type="text"
@@ -34,11 +48,11 @@
                 <FeatherIcon name="x" class="pv-chip-x-icon" />
               </button>
             </div>
-            <Dropdown :options="addFieldOpts('rows')" placement="bottom-start">
-              <template #default="{ open }">
-                <Button size="sm" :variant="open ? 'subtle' : 'ghost'" icon="plus" label="Add field" class="pv-add-btn" />
+            <PivotFieldPicker :fields="pickableFields('rows')" @select="f => addTo('rows', f)" @opened="pickerOpenCount++" @closed="pickerOpenCount--">
+              <template #default="{ isOpen }">
+                <Button size="sm" :variant="isOpen ? 'subtle' : 'ghost'" icon="plus" label="Add field" class="pv-add-btn" />
               </template>
-            </Dropdown>
+            </PivotFieldPicker>
           </div>
         </div>
 
@@ -54,11 +68,11 @@
                 <FeatherIcon name="x" class="pv-chip-x-icon" />
               </button>
             </div>
-            <Dropdown :options="addFieldOpts('cols')" placement="bottom-start">
-              <template #default="{ open }">
-                <Button size="sm" :variant="open ? 'subtle' : 'ghost'" icon="plus" label="Add field" class="pv-add-btn" />
+            <PivotFieldPicker :fields="pickableFields('cols')" @select="f => addTo('cols', f)" @opened="pickerOpenCount++" @closed="pickerOpenCount--">
+              <template #default="{ isOpen }">
+                <Button size="sm" :variant="isOpen ? 'subtle' : 'ghost'" icon="plus" label="Add field" class="pv-add-btn" />
               </template>
-            </Dropdown>
+            </PivotFieldPicker>
           </div>
         </div>
 
@@ -79,11 +93,11 @@
                 <FeatherIcon name="x" class="pv-chip-x-icon" />
               </button>
             </div>
-            <Dropdown :options="addFieldOpts('values')" placement="bottom-start">
-              <template #default="{ open }">
-                <Button size="sm" :variant="open ? 'subtle' : 'ghost'" icon="plus" label="Add field" class="pv-add-btn" />
+            <PivotFieldPicker :fields="pickableFields('values')" @select="f => addTo('values', f)" @opened="pickerOpenCount++" @closed="pickerOpenCount--">
+              <template #default="{ isOpen }">
+                <Button size="sm" :variant="isOpen ? 'subtle' : 'ghost'" icon="plus" label="Add field" class="pv-add-btn" />
               </template>
-            </Dropdown>
+            </PivotFieldPicker>
           </div>
         </div>
 
@@ -127,6 +141,7 @@
 <script setup>
 import { ref, computed, watch } from 'vue'
 import { AGG_OPTIONS, computePivot } from '../../engine/pivot.js'
+import PivotFieldPicker from './PivotFieldPicker.vue'
 
 const props = defineProps({
   modelValue:     { type: Boolean, default: false },
@@ -153,6 +168,28 @@ const rowFields       = ref([])
 const colFields       = ref([])
 const valueFields     = ref([])   // { field, agg }[]
 
+// Tracks how many field-pickers are currently open. While > 0 we tell the
+// frappe-ui Dialog NOT to close on outside-click, otherwise clicking a
+// field in the (teleported) picker popover counts as "outside" to radix
+// and the dialog closes mid-click — the user sees nothing happen.
+const pickerOpenCount = ref(0)
+
+// The actual sheet we read source data from. Lives as its own ref so the
+// user can explicitly switch it via the source-sheet dropdown — necessary
+// to recover pivots whose stored `sourceSheet` got pointed at their own
+// output sheet by a legacy bug. We seed it from existingConfig (when
+// editing) or currentSheet (when creating).
+const sourceSheetInput = ref('')
+
+// All sub-sheet names the user can pick as a source. We keep ALL sheets
+// in the list (including the current one) — filtering "looks like a
+// pivot output" would block valid cases like a user storing source data
+// in a sheet called "Pivot 2024". Trust the user to pick correctly.
+const sheetOptions = computed(() => {
+  const names = props.sheet?.getSheetNames?.() || []
+  return names.map(n => ({ label: n, value: n }))
+})
+
 watch(show, open => {
   if (!open) return
   if (props.existingConfig) {
@@ -161,9 +198,15 @@ watch(show, open => {
     rowFields.value   = [...(c.rows   || [])]
     colFields.value   = [...(c.cols   || [])]
     valueFields.value = (c.values || []).map(v => ({ ...v }))
+    // Seed source-sheet picker. If the stored sourceSheet equals the
+    // pivot's own outputSheet (legacy corruption), fall back to the first
+    // available non-output sheet so the user lands on a sensible default
+    // instead of a feedback loop.
+    sourceSheetInput.value = _pickSourceSheet(c)
     _parseFields()
   } else {
-    rangeInput.value  = props.initialRange || ''
+    rangeInput.value       = props.initialRange || ''
+    sourceSheetInput.value = props.currentSheet || sheetOptions.value[0]?.value || ''
     rowFields.value   = []
     colFields.value   = []
     valueFields.value = []
@@ -174,11 +217,21 @@ watch(show, open => {
 
 // ── Field detection ───────────────────────────────────────────────────────────
 
+// If the saved sourceSheet is the pivot's own outputSheet (a corrupted
+// state from the legacy save path), pick the first non-output sheet as a
+// safer default. Otherwise return what the user / engine saved.
+function _pickSourceSheet(cfg) {
+  const saved = cfg?.sourceSheet
+  if (saved && saved !== cfg?.outputSheet) return saved
+  const all = sheetOptions.value.map(o => o.value)
+  return all.find(n => n !== cfg?.outputSheet) || saved || props.currentSheet || ''
+}
+
 function _parseFields() {
   const range = rangeInput.value.trim()
   if (!range) { rangeError.value = 'Enter a range first.'; return false }
   const [start, end] = range.includes(':') ? range.split(':') : [range, range]
-  const data = props.sheet.getRangeValues(start, end, props.currentSheet)
+  const data = props.sheet.getRangeValues(start, end, sourceSheetInput.value)
   if (!data || !data[0]) { rangeError.value = 'Could not read range.'; return false }
   rangeError.value = ''
   // Filter out blank/null/zero cells — those are empty header columns
@@ -192,11 +245,11 @@ function detectFields() { _parseFields() }
 
 // ── Field assignment ──────────────────────────────────────────────────────────
 
-function addFieldOpts(bucket) {
-  return availableFields.value.map(f => ({
-    label:   f,
-    onClick: () => addTo(bucket, f),
-  }))
+function pickableFields(bucket) {
+  const taken = bucket === 'rows'   ? new Set(rowFields.value)
+              : bucket === 'cols'   ? new Set(colFields.value)
+              :                       new Set(valueFields.value.map(v => v.field))
+  return availableFields.value.filter(f => !taken.has(f))
 }
 
 function addTo(bucket, f) {
@@ -223,7 +276,7 @@ function aggOpts(v) {
 const previewTable = computed(() => {
   if (!rowFields.value.length || !valueFields.value.length || !rangeInput.value) return []
   const config = {
-    sourceSheet: props.currentSheet,
+    sourceSheet: sourceSheetInput.value,
     sourceRange: rangeInput.value.trim(),
     rows:   rowFields.value,
     cols:   colFields.value,
@@ -246,7 +299,7 @@ function onConfirm() {
   if (!canCreate.value) return
   emit('confirm', {
     id:          props.pivotId || undefined,
-    sourceSheet: props.currentSheet,
+    sourceSheet: sourceSheetInput.value,
     sourceRange: rangeInput.value.trim(),
     rows:        [...rowFields.value],
     cols:        [...colFields.value],
@@ -265,7 +318,8 @@ function onConfirm() {
 }
 
 .pv-range-row { display: flex; gap: 8px; align-items: center; }
-.pv-range-input { flex: 1; }
+.pv-range-input  { flex: 1; }
+.pv-source-sheet { flex: 0 0 160px; }
 
 .pv-error { font-size: 12px; color: var(--ink-red-5); margin: 4px 0 0; }
 

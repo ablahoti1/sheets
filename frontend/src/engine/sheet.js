@@ -7,6 +7,7 @@
 
 import { evaluate } from './formula.js'
 import { createDepsEngine } from './deps.js'
+import { renameSheetInFormula } from './formula-adjust.js'
 import { parseCellId, colLabel } from '../utils/cells.js'
 
 export function createSheet({ onCellChanged } = {}) {
@@ -14,6 +15,11 @@ export function createSheet({ onCellChanged } = {}) {
 	const deps     = createDepsEngine()
 	let   current  = 'Sheet1'
 	const circular = new Set()
+	// Optional resolver injected after construction (named ranges live in
+	// a separate engine; we don't want a hard import circle). Returns
+	// `{ sheet, start, end }` or null for unknown names.
+	let resolveNamedRange = null
+	function setNamedRangeResolver(fn) { resolveNamedRange = fn || null }
 
 	// ── Formula evaluation ────────────────────────────────────────────────────
 
@@ -50,6 +56,7 @@ export function createSheet({ onCellChanged } = {}) {
 				(s, e)     => getRangeValues(s, e, sheet),
 				(sh, id)   => getCellValue(id, sh),
 				(sh, s, e) => getRangeValues(s, e, sh),
+				name       => resolveNamedRange?.(name) || null,
 			)
 		} catch (_) {
 			// Partial / malformed formulas (e.g. `=VLOOKUP(` mid-typing, which
@@ -80,7 +87,10 @@ export function createSheet({ onCellChanged } = {}) {
 
 		deps.register(id, value, sheet)
 		_notify(id, sheet)
-		for (const dep of deps.getDependents(id, sheet)) _notify(dep, sheet)
+		// `getDependents` returns `{sheet, cellId}` so cross-sheet dependents
+		// (formulas on Sheet2 reading Sheet1!A1) get re-evaluated when the
+		// source cell on the other sheet changes.
+		for (const dep of deps.getDependents(id, sheet)) _notify(dep.cellId, dep.sheet)
 	}
 
 	function _notify(id, sheet = current) {
@@ -171,7 +181,18 @@ export function createSheet({ onCellChanged } = {}) {
 		if (!sheets[oldName] || sheets[newName] || oldName === newName) return false
 		sheets[newName] = sheets[oldName]
 		delete sheets[oldName]
-		deps.rebuild(sheets[newName], newName)
+		// Walk every sheet (not just the renamed one) and rewrite cross-sheet
+		// formulas that referenced the old name. Without this, `=OldName!A1`
+		// formulas in *other* sheets break with `#REF!` after a rename.
+		for (const sn of Object.keys(sheets)) {
+			for (const [cellId, value] of Object.entries(sheets[sn])) {
+				if (typeof value === 'string' && value.startsWith('=')) {
+					const next = renameSheetInFormula(value, oldName, newName)
+					if (next !== value) sheets[sn][cellId] = next
+				}
+			}
+			deps.rebuild(sheets[sn], sn)
+		}
 		if (current === oldName) current = newName
 		return true
 	}
@@ -242,5 +263,6 @@ export function createSheet({ onCellChanged } = {}) {
 		getSheetNames, getCurrentSheet, getRawData,
 		insertRow, deleteRow, insertCol, deleteCol,
 		snapshot, restore,
+		setNamedRangeResolver,
 	}
 }

@@ -6,7 +6,9 @@
  "engine": "InnoDB",
  "field_order": [
   "title",
-  "sheets_data"
+  "sheets_data",
+  "head_seq",
+  "head_snapshot"
  ],
  "fields": [
   {
@@ -20,6 +22,19 @@
    "fieldname": "sheets_data",
    "fieldtype": "JSON",
    "label": "Sheets Data"
+  },
+  {
+   "fieldname": "head_seq",
+   "fieldtype": "Long Int",
+   "label": "Head op-log seq",
+   "default": "0",
+   "description": "Highest op-log seq applied to the live sheets_data blob."
+  },
+  {
+   "fieldname": "head_snapshot",
+   "fieldtype": "Link",
+   "options": "Sheet Snapshot",
+   "label": "Latest snapshot"
   }
  ],
  "links": [],
@@ -29,7 +44,6 @@
  "name": "Sheet",
  "naming_rule": "Random",
  "owner": "Administrator",
- "track_changes": 1,
  "permissions": [
   {
    "create": 1,
@@ -60,5 +74,6 @@
  "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "DESC",
- "states": []
+ "states": [],
+ "track_changes": 0
 }

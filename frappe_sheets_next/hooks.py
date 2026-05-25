@@ -150,9 +150,16 @@ add_to_apps_screen = [
 
 scheduler_events = {
 	"daily": [
-		# Prune unnamed Version rows older than 30 days.  Named versions
-		# (Sheet Version Name) are pinned and skipped — see versions.py.
-		"frappe_sheets_next.versions.prune_old_versions",
+		# Tiered retention rollup over Sheet Snapshot. Pinned / named /
+		# milestone snapshots are never deleted; auto snapshots thin out
+		# with age. See frappe_sheets_next/versioning/tasks.py for the
+		# exact density schedule and per-site config knobs.
+		"frappe_sheets_next.versioning.tasks.rollup_snapshots",
+		# Drop op-log rows older than the oldest retained snapshot for
+		# each sheet, capped by an absolute age backstop. Preserves the
+		# invariant that any retained snapshot can be expanded into an
+		# op-level activity view.
+		"frappe_sheets_next.versioning.tasks.truncate_op_log",
 	],
 }
 

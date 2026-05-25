@@ -27,11 +27,12 @@ function makeGrid() {
 }
 
 function makeComposable(sheetData = {}) {
-  const sheet   = makeSheet(sheetData)
-  const grid    = makeGrid()
-  const ops     = []
-  const isDirty = ref(false)
-  const history = { push: vi.fn() }
+  const sheet          = makeSheet(sheetData)
+  const grid           = makeGrid()
+  const ops            = []
+  const isDirty        = ref(false)
+  const history        = { push: vi.fn() }
+  const repopulateGrid = vi.fn()
 
   const ctx = useExportImport({
     getSheet:        () => sheet,
@@ -39,13 +40,13 @@ function makeComposable(sheetData = {}) {
     getGrid:         () => grid,
     queueOp:         op => ops.push(op),
     markEdited:      vi.fn(),
-    repopulateGrid:  vi.fn(),
+    repopulateGrid,
     syncFlags:       vi.fn(),
     isDirty,
     history,
   })
 
-  return { ...ctx, sheet, grid, ops, isDirty, history }
+  return { ...ctx, sheet, grid, ops, isDirty, history, repopulateGrid }
 }
 
 // ── _parseCSV ─────────────────────────────────────────────────────────────────
@@ -74,9 +75,20 @@ describe('_parseCSV', () => {
   })
 
   it('skips a trailing empty line', () => {
-    // "a,b\n" → 2 lines, second is '' and is the last → skipped
     const result = _parseCSV('a,b\n')
     expect(result).toEqual([['a', 'b']])
+  })
+
+  it('handles quoted fields that span multiple lines', () => {
+    const result = _parseCSV('"foo\nbar",baz')
+    expect(result).toEqual([['foo\nbar', 'baz']])
+  })
+
+  it('keeps a multi-line quoted field as a single cell in a single row', () => {
+    const csv = 'a,"line1\nline2\nline3",b'
+    const result = _parseCSV(csv)
+    expect(result).toHaveLength(1)
+    expect(result[0]).toEqual(['a', 'line1\nline2\nline3', 'b'])
   })
 
   it('returns an empty array for an empty string', () => {
@@ -191,10 +203,7 @@ describe('importCSV', () => {
     }
 
     composable.importCSV(event)
-
-    // Trigger the onload callback
     mockReader.onload({ target: { result: csvText } })
-
     vi.unstubAllGlobals()
     return composable
   }
@@ -229,6 +238,12 @@ describe('importCSV', () => {
     expect(ops).toHaveLength(1)
     expect(ops[0].opType).toBe('import')
     expect(ops[0].subSheet).toBe('Sheet1')
+  })
+
+  it('calls repopulateGrid so the canvas auto-expands to fit the imported data', () => {
+    const wide = Array.from({ length: 46 }, (_, i) => `v${i}`).join(',')
+    const { repopulateGrid } = runImport(wide)
+    expect(repopulateGrid).toHaveBeenCalledTimes(1)
   })
 
   it('resets e.target.value so the same file can be re-imported', () => {

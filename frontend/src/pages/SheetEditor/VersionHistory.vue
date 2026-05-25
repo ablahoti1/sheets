@@ -12,7 +12,13 @@
 		<div v-if="loading" class="sn-vh-empty">Loading…</div>
 		<div v-else-if="error" class="sn-vh-empty sn-vh-error">{{ error }}</div>
 		<div v-else-if="!visibleGroups.length" class="sn-vh-empty">
-			{{ filter === 'named' ? 'No named versions yet.' : 'No saved versions yet.' }}
+			<div class="sn-vh-empty-title">
+				{{ filter === 'named' ? 'No named versions yet.' : 'No saved versions yet.' }}
+			</div>
+			<div class="sn-vh-empty-hint">
+				Edits are autosaved continuously — your data is safe.
+				Versions appear here after each save (rapid edits are grouped).
+			</div>
 		</div>
 
 		<div v-else class="sn-vh-list">
@@ -293,10 +299,12 @@ function shortUser(u) {
 }
 
 .sn-vh-empty {
-	padding: 24px 16px;
+	padding: 28px 18px;
 	color: var(--ink-gray-5, #737373);
 	font-size: 13px; text-align: center;
 }
+.sn-vh-empty-title { font-weight: 500; color: var(--ink-gray-7, #525252); margin-bottom: 6px; }
+.sn-vh-empty-hint  { font-size: 12px; line-height: 1.5; color: var(--ink-gray-5, #737373); }
 .sn-vh-error { color: var(--ink-red-5, #dc2626); }
 
 .sn-vh-menu-pop {

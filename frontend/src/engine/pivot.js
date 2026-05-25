@@ -180,20 +180,34 @@ export function writePivotToSheet(table, outputSheet, setCell, clearSheet) {
 export function createPivotEngine() {
   let _pivots = {}   // id → PivotConfig
   let _nextId  = 1
+  let _onChange = null
 
   function _newId() { return `pivot_${_nextId++}` }
+  function _notify() { _onChange?.() }
+
+  // Register a callback fired after every mutation (add/update/remove/restore).
+  // Consumers wire this to a Vue ref so list-driven computeds re-evaluate —
+  // crucial for `restore`, which used to silently rehydrate state without
+  // triggering reactivity, hiding the pivot edit FAB on page reload.
+  function setOnChange(cb) { _onChange = cb }
 
   function add(config) {
     const id = config.id || _newId()
     _pivots[id] = { ...config, id }
+    _notify()
     return id
   }
 
   function update(id, config) {
-    if (_pivots[id]) _pivots[id] = { ..._pivots[id], ...config, id }
+    if (_pivots[id]) {
+      _pivots[id] = { ..._pivots[id], ...config, id }
+      _notify()
+    }
   }
 
-  function remove(id) { delete _pivots[id] }
+  function remove(id) {
+    if (id in _pivots) { delete _pivots[id]; _notify() }
+  }
 
   function list() { return Object.values(_pivots) }
 
@@ -210,7 +224,8 @@ export function createPivotEngine() {
     if (!data) return
     _pivots = JSON.parse(JSON.stringify(data.pivots || {}))
     _nextId  = data.nextId  || 1
+    _notify()
   }
 
-  return { add, update, remove, list, get, affectsPivot, snapshot, restore }
+  return { add, update, remove, list, get, affectsPivot, snapshot, restore, setOnChange }
 }

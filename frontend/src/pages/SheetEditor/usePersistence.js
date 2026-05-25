@@ -1,10 +1,11 @@
 import { ref } from 'vue'
-import { call } from '../../utils/api.js'
+import { call }            from '../../utils/api.js'
+import { encodeForUpload } from '../../utils/compress.js'
 
 // `merge` and the view-state getters/setters are optional — they were missing
 // from earlier versions and their absence caused merged cells / column widths /
 // freeze panes / hidden cols/rows to silently disappear after every save.
-export function usePersistence({ sheet, formats, merge, comments, validation, condFormat, sortFilter, pivot, getViewState, applyViewState, currentTitle, emit }) {
+export function usePersistence({ sheet, formats, merge, comments, validation, condFormat, sortFilter, pivot, charts, namedRanges, getViewState, applyViewState, currentTitle, emit }) {
   const isSaving  = ref(false)
   const saveError = ref('')
 
@@ -21,6 +22,8 @@ export function usePersistence({ sheet, formats, merge, comments, validation, co
       if (saved.sortFilter && sortFilter?.restore) sortFilter.restore(saved.sortFilter)
       if (saved.view       && applyViewState)      applyViewState(saved.view)
       if (saved.pivot      && pivot?.restore)      pivot.restore(saved.pivot)
+      if (saved.charts     && charts?.restore)     charts.restore(saved.charts)
+      if (saved.namedRanges && namedRanges?.restore) namedRanges.restore(saved.namedRanges)
       currentTitle.value = doc.title
     } catch (err) {
       console.error('Load failed:', err)
@@ -30,15 +33,15 @@ export function usePersistence({ sheet, formats, merge, comments, validation, co
   // Creates a brand-new doc on the backend with the given title and returns the
   // doc name.  Called immediately on mount so every doc has a real ID from the
   // start — no manual-save step, matching Google Sheets' always-saved model.
-  async function autoCreate(title) {
-    return _persist(null, title || 'Untitled Spreadsheet')
+  async function autoCreate(title, { ops } = {}) {
+    return _persist(null, title || 'Untitled Spreadsheet', { ops })
   }
 
-  async function saveExisting(name, title, { keepalive = false } = {}) {
-    await _persist(name, title, { keepalive })
+  async function saveExisting(name, title, { keepalive = false, ops } = {}) {
+    return _persist(name, title, { keepalive, ops })
   }
 
-  async function _persist(name, title, { keepalive = false } = {}) {
+  async function _persist(name, title, { keepalive = false, ops } = {}) {
     isSaving.value = true
     saveError.value = ''
     try {
@@ -51,17 +54,25 @@ export function usePersistence({ sheet, formats, merge, comments, validation, co
         condFormat: condFormat?.snapshot?.() ?? null,
         sortFilter: sortFilter?.snapshot?.() ?? null,
         pivot:      pivot?.snapshot?.()      ?? null,
+        charts:     charts?.snapshot?.()     ?? null,
+        namedRanges: namedRanges?.snapshot?.() ?? null,
         view:       getViewState?.()         ?? null,
       })
-      const docName = await call('frappe_sheets_next.api.save_sheet', {
+      const payload = await encodeForUpload(sheetsData)
+      // The save endpoint now returns { name, head_seq } so the client knows
+      // where its batch of ops landed in the canonical op-log ordering.
+      const result = await call('frappe_sheets_next.api.save_sheet', {
         title,
-        sheets_data: sheetsData,
+        sheets_data: payload,
         ...(name ? { name } : {}),
+        ...(ops && ops.length ? { ops: JSON.stringify(ops) } : {}),
       }, { keepalive })
       currentTitle.value = title
-      return docName
+      return typeof result === 'string' ? result : result?.name
     } catch (err) {
-      saveError.value = err.message || 'Save failed'
+      // Network failures (offline, server restart) surface with no usable
+      // message — fall back to a helpful prompt rather than a blank chip.
+      saveError.value = err.message || "Couldn't save — check your connection, then try Cmd+S."
       setTimeout(() => { saveError.value = '' }, 5000)
       return null
     } finally {

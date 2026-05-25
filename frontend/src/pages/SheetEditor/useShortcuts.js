@@ -19,6 +19,7 @@
  *   clipboardHas: import('vue').Ref<boolean>,
  *   setMarchingAnts: (v: null) => void,
  *   fillDown: () => void, fillRight: () => void,
+ *   runSmartFill: () => void,
  * }} actions
  */
 export function useShortcuts(actions) {
@@ -30,6 +31,7 @@ export function useShortcuts(actions) {
     commentPanel, dropdownPanel, splitText, revertSplitPreview, closeSplit,
     clipboard, clipboardHas, setMarchingAnts,
     fillDown, fillRight,
+    runSmartFill,
   } = actions
 
   function _isInInput() {
@@ -91,6 +93,12 @@ export function useShortcuts(actions) {
     if (_handleEscape(e, inInput))          return
     if (mod && e.key === 'd' && !inInput) { e.preventDefault(); fillDown();  return }
     if (mod && e.key === 'r' && !inInput) { e.preventDefault(); fillRight(); return }
+    // Cmd/Ctrl+E — Smart Fill. Matches Excel's Flash Fill shortcut. Detects
+    // a pattern from the user's example values in the selected column and
+    // fills the remaining empty cells in the selection.
+    if (mod && (e.key === 'e' || e.key === 'E') && !inInput) {
+      e.preventDefault(); runSmartFill?.(); return
+    }
   }
 
   return { onGlobalKey }

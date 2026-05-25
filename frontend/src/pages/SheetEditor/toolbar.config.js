@@ -39,6 +39,7 @@ export function buildMoreToolbarOptions({
   toggleFmt, toggleWrap, toggleFormatPainter, clearFormatting,
   adjustDecimals, openCfDialog, openHyperlinkDialog, toggleMerge,
   toggleSortFilter, applyBorder, zoomBy, resetZoom, openPivotDialog,
+  openChartDialog, openNamedRangesDialog, runSmartFill,
 }) {
   return [
     { group: 'Format', items: [
@@ -56,6 +57,7 @@ export function buildMoreToolbarOptions({
       { label: 'Insert hyperlink',       icon: 'lucide-link',  onClick: () => openHyperlinkDialog()     },
       { label: 'Merge / unmerge',        icon: 'maximize-2',   onClick: () => toggleMerge()             },
       { label: 'Toggle filter',          icon: 'filter',       onClick: () => toggleSortFilter()        },
+      { label: 'Smart Fill (Ctrl+E)',    icon: 'zap',          onClick: () => runSmartFill?.()          },
     ]},
     { group: 'Borders', items: [
       { label: 'All borders',     icon: 'grid',     onClick: () => applyBorder('all')     },
@@ -68,7 +70,11 @@ export function buildMoreToolbarOptions({
       { label: 'Reset zoom', icon: 'minimize', onClick: () => resetZoom()   },
     ]},
     { group: 'Insert', items: [
-      { label: 'Pivot table…', icon: 'layout', onClick: () => openPivotDialog() },
+      { label: 'Pivot table…', icon: 'layout',      onClick: () => openPivotDialog() },
+      { label: 'Chart…',       icon: 'bar-chart-2', onClick: () => openChartDialog() },
+    ]},
+    { group: 'Workbook', items: [
+      { label: 'Named ranges…', icon: 'bookmark', onClick: () => openNamedRangesDialog() },
     ]},
   ]
 }

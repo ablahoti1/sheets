@@ -25,31 +25,35 @@ function _esc(v) {
   return String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
+
 export function _parseCSV(text) {
   const rows = []
-  const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n')
-  for (const line of lines) {
-    if (line === '' && rows.length === lines.length - 1) continue
-    const cells = []
-    let i = 0
-    while (i < line.length) {
-      if (line[i] === '"') {
+  const s = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+  let i = 0
+
+  while (i < s.length) {
+    const row = []
+    while (true) {
+      if (s[i] === '"') {
+        // Quoted field — may contain commas and newlines
         i++
         let cell = ''
-        while (i < line.length) {
-          if (line[i] === '"' && line[i + 1] === '"') { cell += '"'; i += 2 }
-          else if (line[i] === '"') { i++; break }
-          else { cell += line[i++] }
+        while (i < s.length) {
+          if (s[i] === '"' && s[i + 1] === '"') { cell += '"'; i += 2 }
+          else if (s[i] === '"') { i++; break }
+          else cell += s[i++]
         }
-        if (line[i] === ',') i++
-        cells.push(cell)
+        row.push(cell)
       } else {
-        const end = line.indexOf(',', i)
-        if (end === -1) { cells.push(line.slice(i)); i = line.length }
-        else { cells.push(line.slice(i, end)); i = end + 1 }
+        // Unquoted field — ends at ',' or newline
+        const start = i
+        while (i < s.length && s[i] !== ',' && s[i] !== '\n') i++
+        row.push(s.slice(start, i))
       }
+      if (i >= s.length || s[i] === '\n') { i++; break }
+      i++ // skip ','
     }
-    rows.push(cells)
+    rows.push(row)
   }
   return rows
 }
@@ -189,13 +193,10 @@ export function useExportImport({
       const text    = ev.target.result
       const rows    = _parseCSV(text)
       const sheet   = getSheet()
-      const grid    = getGrid()
-      if (grid) grid.clearAll()
       const currentSh = sheet.getCurrentSheet()
       const before    = {}
       for (const id of Object.keys(sheet.getRawData(currentSh)))
         before[id] = sheet.getCell(id, currentSh)
-      // Clear existing data first
       for (const id of Object.keys(sheet.getRawData(currentSh)))
         sheet.setCell(id, '')
       const after = {}
@@ -206,9 +207,7 @@ export function useExportImport({
           if (val !== '') { sheet.setCell(id, val); after[id] = val }
         }
       }
-      // Repopulate canvas
-      for (const id of Object.keys(sheet.getRawData(currentSh)))
-        grid && grid.setCell(id, sheet.getDisplayValue(id))
+      repopulateGrid()
       queueOp({
         opType: 'import', subSheet: currentSh,
         cellRefs: _diffRefs(before, after), before, after,

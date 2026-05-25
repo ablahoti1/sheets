@@ -1,57 +1,152 @@
-// Client for the backend version-history API (versions.py).
+// Client for the v2 versioning API.
 //
-// Pure data-fetch helpers — no Vue state inside.  Returns the same shapes the
-// backend produces so the UI layer can render directly.
+// Server-side architecture: event log (Sheet Op Log) + checkpointed
+// snapshots (Sheet Snapshot). See frappe_sheets_next/versioning/ for the
+// docstrings. This module is a thin shim that maps v2 endpoints to the
+// shape the existing UI layer consumes, so the version-history panel and
+// cell-history popover stay drop-in compatible while we keep moving.
 
 import { call } from '../utils/api.js'
 
-const PREFIX = 'frappe_sheets_next.versions'
+const PREFIX = 'frappe_sheets_next.versioning.api'
 
-export function list(sheet, limit = 200) {
-	return call(`${PREFIX}.list_versions`, { sheet, limit })
+const _tzOffsetMinutes = () => -new Date().getTimezoneOffset()
+
+// ── Timeline (replaces list_versions) ────────────────────────────────────────
+
+const BUCKET_ORDER = ['pinned', 'today', 'yesterday', 'week', 'earlier']
+
+// Flattens the bucketed timeline payload back into the per-row array the
+// existing VersionHistory.vue consumes. The panel's own day-grouping then
+// re-derives the visual sections from `timestamp`, so the change is
+// transparent to UI code.
+export async function list(sheet, _limit = 200) {
+	const payload = await call(`${PREFIX}.timeline`, {
+		sheet,
+		tz_offset_minutes: _tzOffsetMinutes(),
+		bucket_limit: 40,
+	})
+	const rows = []
+	const seen = new Set()
+	for (const bucket of BUCKET_ORDER) {
+		const items = payload?.buckets?.[bucket]?.items || []
+		for (const it of items) {
+			if (seen.has(it.id)) continue   // pinned snapshots also appear in date buckets
+			seen.add(it.id)
+			rows.push(_toVersionRow(it))
+		}
+	}
+	rows.sort((a, b) => (b.seq || 0) - (a.seq || 0))
+	return rows
 }
 
-export function getState(sheet, version) {
-	return call(`${PREFIX}.get_version_state`, { sheet, version })
+function _toVersionRow(item) {
+	return {
+		name:           item.id,
+		seq:            item.seq,
+		user:           item.actor,
+		timestamp:      item.creation,
+		version_name:   item.label || '',
+		pinned:         !!item.pinned,
+		primary_op:     item.kind,
+		op_labels:      _opLabel(item),
+		collapsed_count: 1,
+	}
 }
 
-export function restore(sheet, version) {
-	return call(`${PREFIX}.restore_version`, { sheet, version })
+function _opLabel(item) {
+	if (item.kind === 'milestone') return ['Milestone']
+	if (item.kind === 'named')     return ['Named version']
+	if (item.op_count > 0)         return [`${item.op_count} edit${item.op_count === 1 ? '' : 's'}`]
+	return []
 }
 
-export function name(sheet, version, versionName) {
-	return call(`${PREFIX}.name_version`,
-		{ sheet, version, version_name: versionName })
+// ── State (replaces get_version_state) ────────────────────────────────────────
+
+export async function getState(sheet, version) {
+	const state = await call(`${PREFIX}.state_at`, { snapshot: version })
+	// The panel reads { sheets_data, title }; we don't carry a separate
+	// title in the snapshot — fall back to the live one.
+	return { sheets_data: state.sheets_data || '{}', title: state.label || '' }
 }
 
-export function clearName(sheet, version) {
-	return call(`${PREFIX}.clear_version_name`, { sheet, version })
+// ── Restore (replaces restore_version) ────────────────────────────────────────
+
+export async function restore(_sheet, version) {
+	return call(`${PREFIX}.restore`, { snapshot: version })
 }
 
-export function makeACopy(sheet, version, title = '') {
-	return call(`${PREFIX}.make_a_copy`, { sheet, version, title })
+// ── Label / pin (replaces name_version + clear_version_name) ──────────────────
+
+export async function name(_sheet, version, versionName) {
+	return call(`${PREFIX}.label_snapshot`, { snapshot: version, label: versionName })
 }
 
-export function cellHistory(sheet, cellRef, sheetName = 'Sheet1', limit = 50) {
-	return call(`${PREFIX}.cell_history`,
-		{ sheet, cell_ref: cellRef, sheet_name: sheetName, limit })
+export async function clearName(_sheet, version) {
+	return call(`${PREFIX}.label_snapshot`, { snapshot: version, label: '', pinned: 0 })
 }
 
-// Cells changed between `version` and the one immediately before it (or
-// `against`, when provided).  Drives the preview-mode highlighting layer.
-export function cellDiff(sheet, version, against = '') {
-	return call(`${PREFIX}.cell_diff`, { sheet, version, against })
+// ── Explicit "Save version" — UI button that pins right now. ─────────────────
+
+export async function saveVersion(sheet, versionName) {
+	return call(`${PREFIX}.save_snapshot`, { sheet, label: versionName })
 }
 
-// Record an op against the in-flight save.  Frontend call sites
-// (paste, fill, import, etc.) fire this immediately after their mutation
-// so the resulting Version row gets the right label + cell-history entry.
+// ── Make a copy ───────────────────────────────────────────────────────────────
 //
-// Payloads are kept small — only the cells the op actually touched.
+// v2 doesn't have a dedicated copy endpoint; we replay the snapshot state
+// into a brand-new sheet via the standard save flow.
+
+export async function makeACopy(sheet, version, title = '') {
+	const state = await call(`${PREFIX}.state_at`, { snapshot: version })
+	const out = await call('frappe_sheets_next.api.save_sheet', {
+		title:       title || 'Copy',
+		sheets_data: state.sheets_data || '{}',
+	})
+	return out?.name || out
+}
+
+// ── Cell history (replaces cell_history) ──────────────────────────────────────
+//
+// v2 queries the canonical op log directly — much faster than the old
+// version-diff walk because we don't materialise intermediate state.
+
+export async function cellHistory(sheet, cellRef, sheetName = 'Sheet1', limit = 50) {
+	const ops = await call(`${PREFIX}.ops_for_cell`, {
+		sheet,
+		cell_id:   cellRef,
+		sub_sheet: sheetName,
+		limit,
+	})
+	// Adapter for CellHistoryPopover.vue's existing field names.
+	return (ops || []).map(o => ({
+		version:   o.id,
+		timestamp: o.creation,
+		user:      o.actor,
+		before:    o.before,
+		after:     o.after,
+	}))
+}
+
+// ── Cell diff (legacy, no v2 equivalent yet) ──────────────────────────────────
+//
+// The old preview-highlight feature diffed consecutive Version blobs. With
+// sparse snapshots this becomes a server-heavy operation; we defer it until
+// a dedicated diff endpoint lands. Returning empty keeps the panel happy.
+
+export async function cellDiff(_sheet, _version, _against = '') {
+	return { sheets: {} }
+}
+
+// ── Op recording — fire-and-forget audit logging. ─────────────────────────────
+//
+// In the new model ops are submitted as a batch with each save (see
+// usePersistence). This single-op endpoint is kept for ad-hoc / realtime
+// callers that want to record an action without forcing a save.
+
 export function recordOp({ sheet, opType, cellRefs = null, before = null,
-                           after = null, summary = '', subSheet = '',
-                           version = '' }) {
-	return call(`${PREFIX}.record_op`, {
+                           after = null, summary = '', subSheet = '' }) {
+	return call('frappe_sheets_next.api.record_op', {
 		sheet,
 		op_type:   opType,
 		cell_refs: cellRefs && JSON.stringify(cellRefs),
@@ -59,12 +154,15 @@ export function recordOp({ sheet, opType, cellRefs = null, before = null,
 		after:     after  && JSON.stringify(after),
 		summary,
 		sub_sheet: subSheet,
-		version,
 	})
 }
 
-// Convenience: returns the Version row name created by the most-recent save
-// for a given sheet.  Frontend uses it to hard-link ops to their Version.
-export function latestVersion(sheet) {
-	return call(`${PREFIX}.latest_version`, { sheet })
+// Used to be the Version row created by the latest save. The new model
+// doesn't have a 1:1 (ops aren't pinned to versions), so we return the
+// current head_seq — that's what callers actually need (a monotonic
+// ordering anchor).
+
+export async function latestVersion(sheet) {
+	const head = await call(`${PREFIX}.head`, { sheet })
+	return head?.head_seq ?? 0
 }

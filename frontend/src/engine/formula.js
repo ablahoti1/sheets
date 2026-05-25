@@ -8,6 +8,7 @@ const T = {
 	COLREF:'COLREF',
 	SHEETREF:'SHEETREF',
 	SHEETCOL:'SHEETCOL',
+	NAME:'NAME',         // identifier that isn't a function call or cell ref
 }
 
 // ─── Tokenizer ────────────────────────────────────────────────────────────────
@@ -20,7 +21,12 @@ export function tokenize(src) {
 		if (src[i] === '"') {
 			let s = ''; i++
 			while (i < src.length && src[i] !== '"') {
-				if (src[i] === '\\') i++
+				// Only `\"` and `\\` are true escapes. Everything else (notably
+				// `\d`, `\s`, `\w`) must pass through as backslash-plus-char so
+				// regex functions like REGEXMATCH work.
+				if (src[i] === '\\' && (src[i+1] === '"' || src[i+1] === '\\')) {
+					i++
+				}
 				s += src[i++]
 			}
 			i++
@@ -56,8 +62,16 @@ export function tokenize(src) {
 				}
 			}
 			const up = s.trim().toUpperCase()
-			if (up === 'TRUE')  { out.push({ t: T.BOOL, v: true  }); continue }
-			if (up === 'FALSE') { out.push({ t: T.BOOL, v: false }); continue }
+
+			// Peek for an immediately-following `(` so `TRUE()` and `FALSE()`
+			// resolve to function calls rather than the bool keyword + a stray
+			// pair of parens (which would tokenise as syntax error). Sheets and
+			// Excel both accept either form for these literals.
+			let j = i; while (j < src.length && src[j] === ' ') j++
+			const isCall = (src[j] === '(')
+
+			if (!isCall && up === 'TRUE')  { out.push({ t: T.BOOL, v: true  }); continue }
+			if (!isCall && up === 'FALSE') { out.push({ t: T.BOOL, v: false }); continue }
 
 			if (i < src.length && src[i] === '!') {
 				i++
@@ -71,11 +85,13 @@ export function tokenize(src) {
 				continue
 			}
 
-			let j = i; while (j < src.length && src[j] === ' ') j++
-			if (src[j] === '(')                          out.push({ t: T.FN, v: up })
+			if (isCall)                                  out.push({ t: T.FN, v: up })
 			else if (/^[A-Z]+[0-9]+$/.test(up))         out.push({ t: T.REF, v: up })
 			else if (/^[A-Z]+$/.test(up))               out.push({ t: T.COLREF, v: up })
-			else                                          out.push({ t: T.FN, v: up })
+			// Bare identifier not followed by `(` — candidate named range.
+			// The parser resolves it via `resolveNamedRange`; if unresolved
+			// the expression evaluates to `#NAME?`.
+			else                                          out.push({ t: T.NAME, v: up })
 			continue
 		}
 
@@ -190,6 +206,34 @@ const FUNCTIONS = {
 	EVEN:   ([v])        => { const n=Math.ceil(Math.abs(toNum(v))); return n%2===0?n:n+1 },
 	ODD:    ([v])        => { const n=Math.ceil(Math.abs(toNum(v))); return n%2!==0?n:n+1 },
 
+	// Trigonometry — all in radians, matching Excel/Sheets convention.
+	SIN:    ([v])        => Math.sin(toNum(v)),
+	COS:    ([v])        => Math.cos(toNum(v)),
+	TAN:    ([v])        => Math.tan(toNum(v)),
+	ASIN:   ([v])        => { const n=toNum(v); return n<-1||n>1 ? '#NUM!' : Math.asin(n) },
+	ACOS:   ([v])        => { const n=toNum(v); return n<-1||n>1 ? '#NUM!' : Math.acos(n) },
+	ATAN:   ([v])        => Math.atan(toNum(v)),
+	ATAN2:  ([x,y])      => Math.atan2(toNum(y), toNum(x)),     // Excel order: ATAN2(x,y)
+	SINH:   ([v])        => Math.sinh(toNum(v)),
+	COSH:   ([v])        => Math.cosh(toNum(v)),
+	TANH:   ([v])        => Math.tanh(toNum(v)),
+	DEGREES:([v])        => toNum(v) * 180 / Math.PI,
+	RADIANS:([v])        => toNum(v) * Math.PI / 180,
+
+	// Combinatorics.
+	COMBIN: ([n,k]) => {
+		const nn=Math.trunc(toNum(n)), kk=Math.trunc(toNum(k))
+		if (nn<0||kk<0||kk>nn) return '#NUM!'
+		let r=1; for (let i=1;i<=kk;i++) r = r*(nn-i+1)/i
+		return Math.round(r)
+	},
+	PERMUT: ([n,k]) => {
+		const nn=Math.trunc(toNum(n)), kk=Math.trunc(toNum(k))
+		if (nn<0||kk<0||kk>nn) return '#NUM!'
+		let r=1; for (let i=0;i<kk;i++) r *= (nn-i)
+		return r
+	},
+
 	SUMPRODUCT: args => {
 		const arrays = args.map(a => flatten([a]).map(toNum))
 		const len = Math.min(...arrays.map(a=>a.length))
@@ -227,6 +271,37 @@ const FUNCTIONS = {
 		const vals=r.reduce((acc,v,i)=>test(v)?[...acc,toNum(a[i]||0)]:acc,[])
 		return vals.length ? vals.reduce((s,v)=>s+v,0)/vals.length : '#DIV/0!'
 	},
+	// AVERAGEIFS(avg_range, criteria_range1, criteria1, [criteria_range2, criteria2, ...])
+	AVERAGEIFS: args => {
+		const av = flatten([args[0]])
+		const mask = av.map(() => true)
+		for (let i=1; i<args.length-1; i+=2) {
+			const range = flatten([args[i]]), test = makeCriteriaTest(args[i+1])
+			range.forEach((v, j) => { if (!test(v)) mask[j] = false })
+		}
+		const vals = av.filter((_, i) => mask[i]).map(toNum)
+		return vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : '#DIV/0!'
+	},
+	MAXIFS: args => {
+		const mr = flatten([args[0]])
+		const mask = mr.map(() => true)
+		for (let i=1; i<args.length-1; i+=2) {
+			const range = flatten([args[i]]), test = makeCriteriaTest(args[i+1])
+			range.forEach((v, j) => { if (!test(v)) mask[j] = false })
+		}
+		const vals = mr.filter((_, i) => mask[i]).map(toNum)
+		return vals.length ? Math.max(...vals) : 0
+	},
+	MINIFS: args => {
+		const mr = flatten([args[0]])
+		const mask = mr.map(() => true)
+		for (let i=1; i<args.length-1; i+=2) {
+			const range = flatten([args[i]]), test = makeCriteriaTest(args[i+1])
+			range.forEach((v, j) => { if (!test(v)) mask[j] = false })
+		}
+		const vals = mr.filter((_, i) => mask[i]).map(toNum)
+		return vals.length ? Math.min(...vals) : 0
+	},
 	LARGE: ([range,k]) => {
 		const arr=flatten([range]).map(toNum).sort((a,b)=>b-a)
 		const n=toNum(k)-1; return n>=0&&n<arr.length ? arr[n] : '#NUM!'
@@ -245,6 +320,91 @@ const FUNCTIONS = {
 		if(vals.length<2) return '#DIV/0!'
 		const mean=vals.reduce((s,v)=>s+v,0)/vals.length
 		return Math.sqrt(vals.reduce((s,v)=>s+(v-mean)**2,0)/(vals.length-1))
+	},
+	// Population stdev — divides by N, not (N-1).
+	STDEVP: args => {
+		const vals = flatten(args).map(toNum)
+		if (vals.length < 1) return '#DIV/0!'
+		const mean = vals.reduce((s,v)=>s+v,0) / vals.length
+		return Math.sqrt(vals.reduce((s,v)=>s+(v-mean)**2,0) / vals.length)
+	},
+	// Sample variance.
+	VAR: args => {
+		const vals = flatten(args).map(toNum)
+		if (vals.length < 2) return '#DIV/0!'
+		const mean = vals.reduce((s,v)=>s+v,0) / vals.length
+		return vals.reduce((s,v)=>s+(v-mean)**2,0) / (vals.length - 1)
+	},
+	// Population variance.
+	VARP: args => {
+		const vals = flatten(args).map(toNum)
+		if (vals.length < 1) return '#DIV/0!'
+		const mean = vals.reduce((s,v)=>s+v,0) / vals.length
+		return vals.reduce((s,v)=>s+(v-mean)**2,0) / vals.length
+	},
+	// Average of absolute deviations from mean.
+	AVEDEV: args => {
+		const vals = flatten(args).map(toNum)
+		if (!vals.length) return '#DIV/0!'
+		const mean = vals.reduce((s,v)=>s+v,0) / vals.length
+		return vals.reduce((s,v)=>s+Math.abs(v-mean),0) / vals.length
+	},
+	// Geometric mean. All values must be positive.
+	GEOMEAN: args => {
+		const vals = flatten(args).map(toNum)
+		if (!vals.length || vals.some(v => v <= 0)) return '#NUM!'
+		const product = vals.reduce((p, v) => p * v, 1)
+		return Math.pow(product, 1 / vals.length)
+	},
+	// Harmonic mean.
+	HARMEAN: args => {
+		const vals = flatten(args).map(toNum)
+		if (!vals.length || vals.some(v => v === 0)) return '#NUM!'
+		return vals.length / vals.reduce((s, v) => s + 1/v, 0)
+	},
+	// Pearson correlation coefficient.
+	CORREL: ([xs, ys]) => {
+		const X = flatten([xs]).map(toNum), Y = flatten([ys]).map(toNum)
+		const n = Math.min(X.length, Y.length)
+		if (n < 2) return '#DIV/0!'
+		const mx = X.slice(0,n).reduce((s,v)=>s+v,0) / n
+		const my = Y.slice(0,n).reduce((s,v)=>s+v,0) / n
+		let num=0, dx=0, dy=0
+		for (let i=0; i<n; i++) {
+			const a = X[i]-mx, b = Y[i]-my
+			num += a*b; dx += a*a; dy += b*b
+		}
+		const den = Math.sqrt(dx*dy)
+		return den === 0 ? '#DIV/0!' : num / den
+	},
+	// Linear regression slope: y = SLOPE*x + INTERCEPT
+	SLOPE: ([ys, xs]) => {
+		const Y = flatten([ys]).map(toNum), X = flatten([xs]).map(toNum)
+		const n = Math.min(X.length, Y.length)
+		if (n < 2) return '#DIV/0!'
+		const mx = X.slice(0,n).reduce((s,v)=>s+v,0) / n
+		const my = Y.slice(0,n).reduce((s,v)=>s+v,0) / n
+		let num=0, den=0
+		for (let i=0; i<n; i++) {
+			num += (X[i]-mx) * (Y[i]-my)
+			den += (X[i]-mx) ** 2
+		}
+		return den === 0 ? '#DIV/0!' : num / den
+	},
+	INTERCEPT: ([ys, xs]) => {
+		const Y = flatten([ys]).map(toNum), X = flatten([xs]).map(toNum)
+		const n = Math.min(X.length, Y.length)
+		if (n < 2) return '#DIV/0!'
+		const mx = X.slice(0,n).reduce((s,v)=>s+v,0) / n
+		const my = Y.slice(0,n).reduce((s,v)=>s+v,0) / n
+		let num=0, den=0
+		for (let i=0; i<n; i++) {
+			num += (X[i]-mx) * (Y[i]-my)
+			den += (X[i]-mx) ** 2
+		}
+		if (den === 0) return '#DIV/0!'
+		const slope = num / den
+		return my - slope * mx
 	},
 	PERCENTILE: ([range,k]) => {
 		const arr=flatten([range]).map(toNum).sort((a,b)=>a-b)
@@ -302,7 +462,14 @@ const FUNCTIONS = {
 	TEXT:   ([v,fmt])        => {
 		const n=toNum(v)
 		if(typeof fmt!=='string') return String(v)
-		if(fmt.includes('%')){ const d=(fmt.match(/\.([0#]+)$/)||['',''])[1].length; return (n*100).toFixed(d)+'%' }
+		if(fmt.includes('%')){
+			// Decimals may appear before the trailing `%`, e.g. `"0.0%"`. The
+			// previous regex required the digits at end-of-string and missed
+			// them when `%` followed.
+			const m = fmt.match(/\.([0#]+)/)
+			const d = m ? m[1].length : 0
+			return (n*100).toFixed(d) + '%'
+		}
 		if(fmt.startsWith('$')) return '$'+n.toFixed(2)
 		const dm=fmt.match(/\.([0#]+)$/); if(dm) return n.toFixed(dm[1].length)
 		if(/[0#,]+/.test(fmt)) return n.toLocaleString()
@@ -311,6 +478,55 @@ const FUNCTIONS = {
 	DOLLAR: ([v,d]) => '$'+toNum(v).toFixed(d!==undefined?toNum(d):2),
 	FIXED:  ([v,d]) => toNum(v).toFixed(d!==undefined?toNum(d):2),
 	NUMBERVALUE: ([v]) => parseFloat(String(v).replace(/[,\s]/g,'')),
+	// SPLIT(text, delimiter, [split_by_each], [remove_empty]) — return an array.
+	SPLIT: ([text, delim, splitByEach, removeEmpty]) => {
+		const s = String(text ?? '')
+		const d = String(delim ?? '')
+		if (!d) return [s]
+		const each = splitByEach === undefined ? true : !!splitByEach
+		const dropEmpty = removeEmpty === undefined ? true : !!removeEmpty
+		let parts
+		if (each && d.length > 1) {
+			// Split on each character in `d`.
+			const re = new RegExp(`[${d.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}]`)
+			parts = s.split(re)
+		} else {
+			parts = s.split(d)
+		}
+		return dropEmpty ? parts.filter(p => p !== '') : parts
+	},
+	JOIN: ([delim, ...rest]) => flatten(rest).map(v => v == null ? '' : String(v)).join(String(delim ?? '')),
+	// Regex helpers — JavaScript regex flavour (ECMA-262), like Google Sheets.
+	REGEXMATCH: ([text, pattern]) => {
+		try { return new RegExp(String(pattern)).test(String(text ?? '')) }
+		catch (_) { return '#ERROR!' }
+	},
+	REGEXEXTRACT: ([text, pattern]) => {
+		try {
+			const m = new RegExp(String(pattern)).exec(String(text ?? ''))
+			if (!m) return '#N/A'
+			return m[1] !== undefined ? m[1] : m[0]
+		} catch (_) { return '#ERROR!' }
+	},
+	REGEXREPLACE: ([text, pattern, replacement]) => {
+		try { return String(text ?? '').replace(new RegExp(String(pattern), 'g'), String(replacement ?? '')) }
+		catch (_) { return '#ERROR!' }
+	},
+	// ADDRESS(row, col, [abs_num], [a1_or_r1c1], [sheet]) — build a textual
+	// reference. `abs_num`: 1=$A$1, 2=A$1, 3=$A1, 4=A1. R1C1 mode not yet
+	// supported — falls back to A1.
+	ADDRESS: ([row, col, absNum, _a1, sheet]) => {
+		const r = toNum(row), c = toNum(col)
+		if (r < 1 || c < 1) return '#VALUE!'
+		const an = absNum === undefined ? 1 : toNum(absNum)
+		// Build column letter.
+		let n = c, label = ''
+		while (n > 0) { const m = (n - 1) % 26; label = String.fromCharCode(65 + m) + label; n = Math.floor((n - 1) / 26) }
+		const colAbs = (an === 1 || an === 3) ? '$' : ''
+		const rowAbs = (an === 1 || an === 2) ? '$' : ''
+		const ref = `${colAbs}${label}${rowAbs}${r}`
+		return sheet ? `${sheet}!${ref}` : ref
+	},
 
 	TODAY:  () => { const d=new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}` },
 	NOW:    () => new Date().toLocaleString(),
@@ -340,11 +556,68 @@ const FUNCTIONS = {
 		while(d<=end){ const day=d.getDay(); if(day!==0&&day!==6) count++; d.setDate(d.getDate()+1) }
 		return count
 	},
+	// TIME(h, m, s) — Sheets/Excel store time as a fraction of a day. We return
+	// the same fractional representation so it composes with arithmetic.
+	TIME: ([h, m, s]) => {
+		const hh=toNum(h), mm=toNum(m), ss=toNum(s)
+		const secs = hh*3600 + mm*60 + ss
+		const frac = (secs / 86400) % 1
+		return frac < 0 ? frac + 1 : frac
+	},
+	// EDATE(start_date, months) — same calendar day, N months forward/backward.
+	EDATE: ([start, months]) => {
+		const d = new Date(start)
+		if (isNaN(d.getTime())) return '#VALUE!'
+		const day = d.getDate()
+		d.setMonth(d.getMonth() + toNum(months))
+		// If the target month is shorter, JS rolls over to the next month.
+		// Clamp to the last day of the intended month (Excel behaviour).
+		if (d.getDate() < day) d.setDate(0)
+		return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
+	},
+	// WORKDAY(start_date, days) — add N working days (Mon-Fri), skipping weekends.
+	WORKDAY: ([start, days]) => {
+		const d = new Date(start)
+		if (isNaN(d.getTime())) return '#VALUE!'
+		let remaining = toNum(days)
+		const step = remaining >= 0 ? 1 : -1
+		remaining = Math.abs(remaining)
+		while (remaining > 0) {
+			d.setDate(d.getDate() + step)
+			const day = d.getDay()
+			if (day !== 0 && day !== 6) remaining--
+		}
+		return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
+	},
+	// DATEVALUE("2026-05-23") — Excel/Sheets serial number. We use the Excel
+	// epoch (1900-01-00) for compatibility with their date math.
+	DATEVALUE: ([text]) => {
+		const d = new Date(text)
+		if (isNaN(d.getTime())) return '#VALUE!'
+		// Excel's serial: days since 1899-12-30 (the broken 1900-02-29 leap).
+		const epoch = Date.UTC(1899, 11, 30)
+		return Math.floor((d.getTime() - epoch) / 86400000)
+	},
+	TIMEVALUE: ([text]) => {
+		// Accept "HH:MM" or "HH:MM:SS" with optional AM/PM.
+		const m = String(text).trim().match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(am|pm)?$/i)
+		if (!m) return '#VALUE!'
+		let h = parseInt(m[1], 10)
+		const mm = parseInt(m[2], 10), ss = parseInt(m[3] || '0', 10)
+		const ap = (m[4] || '').toLowerCase()
+		if (ap === 'pm' && h < 12) h += 12
+		if (ap === 'am' && h === 12) h = 0
+		return (h*3600 + mm*60 + ss) / 86400
+	},
 
-	VLOOKUP: ([lookup,table,colIdx,exactMatch]) => {
+	// Per Excel/Sheets semantics: range_lookup defaults to approximate match.
+	// FALSE/0 explicitly forces exact match. The `exact` flag below is `true`
+	// only when FALSE/0 was passed — the previous code had the polarity
+	// inverted, which silently broke every exact-match VLOOKUP call.
+	VLOOKUP: ([lookup,table,colIdx,rangeLookup]) => {
 		if(!Array.isArray(table)) return '#VALUE!'
 		const ci=toNum(colIdx)-1
-		const exact=(exactMatch===false||toNum(exactMatch)===0)?false:true
+		const exact = rangeLookup === false || rangeLookup === 0
 		if(!exact) {
 			let best=null
 			for(const row of table) {
@@ -353,22 +626,47 @@ const FUNCTIONS = {
 			}
 			return best ? (best[ci]!==undefined?best[ci]:'#REF!') : '#N/A'
 		}
-		const row=table.find(r=>Array.isArray(r)&&(String(r[0]).toLowerCase()===String(lookup).toLowerCase()||toNum(r[0])===toNum(lookup)))
+		const row = table.find(r => {
+			if (!Array.isArray(r)) return false
+			if (String(r[0]).toLowerCase() === String(lookup).toLowerCase()) return true
+			// Only fall through to numeric compare when BOTH sides are
+			// numeric — otherwise toNum('a')===toNum('b')===0 silently
+			// matches the first cell for any non-numeric lookup.
+			const rn = Number(r[0]), ln = Number(lookup)
+			return !isNaN(rn) && r[0] !== '' && !isNaN(ln) && lookup !== '' && rn === ln
+		})
 		return row ? (row[ci]!==undefined?row[ci]:'#REF!') : '#N/A'
 	},
-	HLOOKUP: ([lookup,table,rowIdx,exactMatch]) => {
+	HLOOKUP: ([lookup,table,rowIdx,rangeLookup]) => {
 		if(!Array.isArray(table)||!Array.isArray(table[0])) return '#VALUE!'
 		const ri=toNum(rowIdx)-1, first=table[0]
-		const exact=(exactMatch===false||toNum(exactMatch)===0)?false:true
+		const exact = rangeLookup === false || rangeLookup === 0
 		let ci=-1
 		if(!exact) { for(let i=0;i<first.length;i++){if(toNum(first[i])<=toNum(lookup))ci=i;else break;} }
-		else { ci=first.findIndex(v=>String(v).toLowerCase()===String(lookup).toLowerCase()||toNum(v)===toNum(lookup)) }
+		else {
+			ci = first.findIndex(v => {
+				if (String(v).toLowerCase() === String(lookup).toLowerCase()) return true
+				const vn = Number(v), ln = Number(lookup)
+				return !isNaN(vn) && v !== '' && !isNaN(ln) && lookup !== '' && vn === ln
+			})
+		}
 		if(ci===-1) return '#N/A'
 		return table[ri] ? (table[ri][ci]!==undefined?table[ri][ci]:'#REF!') : '#REF!'
 	},
 	MATCH: ([lookup,range,matchType]) => {
 		const arr=flatten([range]), mt=matchType!==undefined?toNum(matchType):1
-		if(mt===0){ const i=arr.findIndex(v=>String(v).toLowerCase()===String(lookup).toLowerCase()||toNum(v)===toNum(lookup)); return i===-1?'#N/A':i+1 }
+		if(mt===0){
+			// Match by string OR by numeric value — but only fall through to a
+			// numeric compare when BOTH sides are actually numeric. Otherwise
+			// toNum('a')===toNum('b')===0 incorrectly matches the first cell
+			// for any non-numeric lookup.
+			const i = arr.findIndex(v => {
+				if (String(v).toLowerCase() === String(lookup).toLowerCase()) return true
+				const vn = Number(v), ln = Number(lookup)
+				return !isNaN(vn) && v !== '' && !isNaN(ln) && lookup !== '' && vn === ln
+			})
+			return i === -1 ? '#N/A' : i + 1
+		}
 		if(mt===1){ for(let i=0;i<arr.length;i++){if(toNum(arr[i])>toNum(lookup))return i>0?i:'#N/A';} return arr.length }
 		if(mt===-1){ for(let i=0;i<arr.length;i++){if(toNum(arr[i])<toNum(lookup))return i>0?i:'#N/A';} return arr.length }
 		return '#N/A'
@@ -404,12 +702,154 @@ const FUNCTIONS = {
 	},
 	ROWS:    ([v]) => Array.isArray(v)?v.length:1,
 	COLUMNS: ([v]) => Array.isArray(v)&&Array.isArray(v[0])?v[0].length:(Array.isArray(v)?v.length:1),
+
+	// ── Array functions ─────────────────────────────────────────────────────
+	//
+	// These return arrays. They work as input to other functions (e.g.
+	// SUM(TRANSPOSE(A1:A3))). Direct cell use without array-formula spilling
+	// will display the first element only — full spilling is a planned
+	// follow-up; for now they're useful as composable building blocks.
+
+	TRANSPOSE: ([range]) => {
+		if (!Array.isArray(range)) return [[range]]
+		if (!Array.isArray(range[0])) return [range]   // 1D → single row
+		const rows = range.length, cols = range[0].length
+		const out = []
+		for (let c = 0; c < cols; c++) {
+			const row = []
+			for (let r = 0; r < rows; r++) row.push(range[r][c])
+			out.push(row)
+		}
+		return out
+	},
+	// FILTER(range, condition) — keeps rows where `condition[i]` is truthy.
+	// Sheets supports multiple conditions; we'll do v1 with a single boolean
+	// array and extend later if needed.
+	FILTER: ([range, include]) => {
+		if (!Array.isArray(range)) return range
+		const inc = flatten([include])
+		const out = range.filter((_, i) => !!inc[i])
+		return out.length ? out : '#N/A'
+	},
+	// SORT(range, [sort_col], [is_ascending])
+	SORT: ([range, sortCol, asc]) => {
+		if (!Array.isArray(range)) return range
+		const isMatrix = Array.isArray(range[0])
+		const rows = isMatrix ? range.map(r => [...r]) : range.map(v => [v])
+		const col  = sortCol !== undefined ? toNum(sortCol) - 1 : 0
+		const dir  = (asc === false || asc === 0) ? -1 : 1
+		rows.sort((a, b) => {
+			const av = a[col], bv = b[col]
+			const an = Number(av), bn = Number(bv)
+			if (!isNaN(an) && !isNaN(bn) && av !== '' && bv !== '') return dir * (an - bn)
+			return dir * String(av).localeCompare(String(bv))
+		})
+		return isMatrix ? rows : rows.map(r => r[0])
+	},
+	UNIQUE: ([range]) => {
+		if (!Array.isArray(range)) return range
+		const isMatrix = Array.isArray(range[0])
+		const seen = new Set(), out = []
+		for (const row of range) {
+			const key = isMatrix ? JSON.stringify(row) : String(row)
+			if (seen.has(key)) continue
+			seen.add(key); out.push(row)
+		}
+		return out
+	},
+	// SEQUENCE(rows, [cols], [start], [step]) — numeric grid generator.
+	SEQUENCE: ([rows, cols, start, step]) => {
+		const r = Math.max(1, toNum(rows))
+		const c = cols  !== undefined ? Math.max(1, toNum(cols))  : 1
+		const s = start !== undefined ? toNum(start) : 1
+		const st = step  !== undefined ? toNum(step)  : 1
+		const out = []
+		let v = s
+		for (let i = 0; i < r; i++) {
+			const row = []
+			for (let j = 0; j < c; j++) { row.push(v); v += st }
+			out.push(c === 1 ? row[0] : row)
+		}
+		return out
+	},
+
+	// ── Financial ────────────────────────────────────────────────────────────
+	//
+	// Standard Excel/Sheets formulas. Rates are per-period; sign convention is
+	// "cash flow positive when received". PMT defaults assume payment-at-end
+	// of period (`type=0`); pass `1` for payment-at-start.
+
+	// PMT(rate, nper, pv, [fv], [type])
+	PMT: ([rate, nper, pv, fv, type]) => {
+		const r = toNum(rate), n = toNum(nper), p = toNum(pv)
+		const f = fv !== undefined ? toNum(fv) : 0
+		const t = type !== undefined ? toNum(type) : 0
+		if (n === 0) return '#NUM!'
+		if (r === 0) return -(p + f) / n
+		const pvf = Math.pow(1 + r, n)
+		return -(p * pvf + f) * r / ((pvf - 1) * (1 + r * t))
+	},
+	// FV(rate, nper, pmt, [pv], [type])
+	FV: ([rate, nper, pmt, pv, type]) => {
+		const r = toNum(rate), n = toNum(nper), pm = toNum(pmt)
+		const p = pv !== undefined ? toNum(pv) : 0
+		const t = type !== undefined ? toNum(type) : 0
+		if (r === 0) return -(p + pm * n)
+		const pvf = Math.pow(1 + r, n)
+		return -(p * pvf + pm * (1 + r * t) * (pvf - 1) / r)
+	},
+	// PV(rate, nper, pmt, [fv], [type])
+	PV: ([rate, nper, pmt, fv, type]) => {
+		const r = toNum(rate), n = toNum(nper), pm = toNum(pmt)
+		const f = fv !== undefined ? toNum(fv) : 0
+		const t = type !== undefined ? toNum(type) : 0
+		if (r === 0) return -(pm * n + f)
+		const pvf = Math.pow(1 + r, n)
+		return -(pm * (1 + r * t) * (pvf - 1) / r + f) / pvf
+	},
+	// NPV(rate, value1, value2, ...) — values are end-of-period cash flows.
+	NPV: ([rate, ...values]) => {
+		const r = toNum(rate)
+		const flat = flatten(values).map(toNum)
+		let npv = 0
+		for (let i = 0; i < flat.length; i++) npv += flat[i] / Math.pow(1 + r, i + 1)
+		return npv
+	},
+	// IRR(values, [guess]) — Newton-Raphson on NPV. Returns the per-period
+	// rate that makes NPV zero. Throws #NUM! if no convergence in 100 iters.
+	IRR: ([values, guess]) => {
+		const flow = flatten([values]).map(toNum)
+		if (flow.length < 2) return '#NUM!'
+		let r = guess !== undefined ? toNum(guess) : 0.1
+		for (let iter = 0; iter < 100; iter++) {
+			let npv = 0, dnpv = 0
+			for (let i = 0; i < flow.length; i++) {
+				const d = Math.pow(1 + r, i)
+				npv  += flow[i] / d
+				dnpv -= i * flow[i] / (d * (1 + r))
+			}
+			if (Math.abs(npv) < 1e-9) return r
+			if (dnpv === 0) return '#NUM!'
+			r = r - npv / dnpv
+		}
+		return '#NUM!'
+	},
 }
 
 // ─── Parser (recursive descent) ───────────────────────────────────────────────
-function createParser(tokens, getCellValue, getRangeValues, getSheetCellValue, getSheetRangeValues) {
+function createParser(tokens, getCellValue, getRangeValues, getSheetCellValue, getSheetRangeValues, resolveNamedRange) {
 	getSheetCellValue   = getSheetCellValue   || ((sheet, ref) => getCellValue(ref))
 	getSheetRangeValues = getSheetRangeValues || ((sheet, s, e) => getRangeValues(s, e))
+	resolveNamedRange   = resolveNamedRange   || (() => null)
+
+	// Shared resolution path for both `T.NAME` and `T.COLREF`-as-named-range.
+	// Returns either a scalar value or a 2D matrix depending on the binding.
+	function _resolveBinding({ sheet, start, end }) {
+		if (start === end) {
+			return sheet ? getSheetCellValue(sheet, start) : getCellValue(start)
+		}
+		return sheet ? getSheetRangeValues(sheet, start, end) : getRangeValues(start, end)
+	}
 	let pos = 0
 	const peek = (off=0) => tokens[pos+off]
 	const next = ()      => tokens[pos++]
@@ -525,7 +965,14 @@ function createParser(tokens, getCellValue, getRangeValues, getSheetCellValue, g
 				const endCol = endTok.t===T.REF ? endTok.v.match(/^[A-Z]+/)[0] : endTok.v
 				return getRangeValues(`${tok.v}1`, `${endCol}1048576`)
 			}
-			return '#REF!'
+			// COLREF without a trailing `:` — the tokenizer emits all-letter
+			// identifiers as COLREF, so a name like "Revenue" lands here too.
+			// Try to resolve it as a named range; otherwise this is the same
+			// as a bare unresolved identifier, which Excel/Sheets surface as
+			// #NAME?, not #REF!.
+			const resolvedCR = resolveNamedRange?.(tok.v)
+			if (resolvedCR) return _resolveBinding(resolvedCR)
+			return '#NAME?'
 		}
 
 		if (tok.t===T.SHEETREF) {
@@ -566,6 +1013,13 @@ function createParser(tokens, getCellValue, getRangeValues, getSheetCellValue, g
 			try { return fn(args) } catch(e) { return '#VALUE!' }
 		}
 
+		if (tok.t===T.NAME) {
+			next()
+			const resolved = resolveNamedRange?.(tok.v)
+			if (!resolved) return '#NAME?'
+			return _resolveBinding(resolved)
+		}
+
 		if (tok.t===T.LP) {
 			next()
 			const v = expr()
@@ -580,11 +1034,20 @@ function createParser(tokens, getCellValue, getRangeValues, getSheetCellValue, g
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
-export function evaluate(formula, getCellValue, getRangeValues, getSheetCellValue, getSheetRangeValues) {
+export function evaluate(
+	formula,
+	getCellValue,
+	getRangeValues,
+	getSheetCellValue,
+	getSheetRangeValues,
+	resolveNamedRange,
+) {
 	try {
 		const tokens = tokenize(formula)
 		if (!tokens.length) return ''
-		return createParser(tokens, getCellValue, getRangeValues, getSheetCellValue, getSheetRangeValues)()
+		return createParser(
+			tokens, getCellValue, getRangeValues, getSheetCellValue, getSheetRangeValues, resolveNamedRange,
+		)()
 	} catch(e) {
 		return '#ERROR!'
 	}

@@ -19,7 +19,7 @@ describe('SelectionPainter', () => {
 
     it('uses selFill color', () => {
       painter.drawSelFill({ r0: 0, c0: 0, r1: 2, c1: 2 })
-      expect(ctx.fillStyle).toMatch(/rgba/)
+      expect(String(ctx.fillStyle).toLowerCase()).toBe('rgba(23, 23, 23, 0.06)')
     })
 
     it('fills a multi-cell range with a larger rect', () => {

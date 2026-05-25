@@ -8,14 +8,19 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "check:bundle-size": "node scripts/check-bundle-size.mjs",
+    "ci": "vitest run && vite build && node scripts/check-bundle-size.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-vue": "^6.0.6",
     "chart.js": "^4.5.1",
+    "echarts": "^6.1.0",
     "frappe-ui": "^0.1.278",
     "vue": "^3.5.34",
-    "xlsx": "^0.18.5"
+    "vue-echarts": "^8.0.1",
+    "xlsx": "^0.18.5",
+    "yjs": "^13.6.30"
   },
   "devDependencies": {
     "@vitest/coverage-v8": "^4.1.6",

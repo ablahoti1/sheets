@@ -2,6 +2,16 @@
   <Dialog v-model="show" :options="{ title: dialogTitle, size: 'md' }">
     <template #body-content>
 
+      <!-- Inline error banner for permission / network failures from any of
+           the share endpoints. Auto-clears after 5 s. -->
+      <Badge
+        v-if="errorMessage"
+        theme="red" variant="subtle" size="sm"
+        class="sd-error"
+        :label="errorMessage"
+        :tooltip="errorMessage"
+      />
+
       <!-- ── General Access ────────────────────────────────────────────────── -->
       <p class="sd-label">General Access</p>
       <div class="sd-access-row">
@@ -106,6 +116,7 @@
 
 <script setup>
 import { ref, computed, watch } from 'vue'
+import { Badge } from 'frappe-ui'
 import { call } from '../../utils/api.js'
 
 const props = defineProps({
@@ -125,7 +136,26 @@ const show = computed({
 
 const dialogTitle = computed(() => `Sharing "${props.sheetTitle || 'Untitled Spreadsheet'}"`)
 
-watch(show, (open) => { if (open) fetchShares() })
+watch(show, (open) => {
+  if (open) {
+    errorMessage.value = ''
+    fetchShares()
+  }
+})
+
+// ── inline error banner ──────────────────────────────────────────────────
+//
+// Every share endpoint can fail with PermissionError (e.g. a read-only
+// member trying to add or remove someone else). Without surfacing the
+// failure the optimistic UI revert just makes things "snap back" with no
+// explanation. Auto-clear after 5 s so the banner doesn't linger after
+// the user has read it.
+const errorMessage = ref('')
+function _flashError(err) {
+  const msg = (err && err.message) ? String(err.message) : 'Something went wrong'
+  errorMessage.value = msg
+  setTimeout(() => { if (errorMessage.value === msg) errorMessage.value = '' }, 5000)
+}
 
 // ── owner ──────────────────────────────────────────────────────────────────
 
@@ -154,6 +184,7 @@ const generalRoleOpts = computed(() => [
 ])
 
 async function applyGeneralAccess(type) {
+  const prevAccess = generalAccess.value
   generalAccess.value = type
   if (!props.sheetId) return
   try {
@@ -162,9 +193,12 @@ async function applyGeneralAccess(type) {
         name: props.sheetId, user: 'All', write: generalRole.value === '1' ? 1 : 0,
       })
     } else {
-      await call('frappe_sheets_next.api.unshare_sheet', { name: props.sheetId, user: 'All' }).catch(() => {})
+      await call('frappe_sheets_next.api.unshare_sheet', { name: props.sheetId, user: 'All' })
     }
-  } catch (_) { /* best-effort */ }
+  } catch (err) {
+    generalAccess.value = prevAccess   // revert visual state
+    _flashError(err)
+  }
 }
 
 // ── shares ─────────────────────────────────────────────────────────────────
@@ -181,7 +215,9 @@ async function fetchShares() {
       .filter(r => r.user !== props.ownerId && r.user !== 'All')
       .map(r => ({ ...r, write: !!r.write }))
     emit('shares-changed', shares.value.length)
-  } catch (_) { /* ignore */ }
+  } catch (err) {
+    _flashError(err)
+  }
   finally { loading.value = false }
 }
 
@@ -199,7 +235,10 @@ async function changeRole(s, write) {
     await call('frappe_sheets_next.api.share_sheet', {
       name: props.sheetId, user: s.user, write: write ? 1 : 0,
     })
-  } catch (_) { s.write = prev }
+  } catch (err) {
+    s.write = prev
+    _flashError(err)
+  }
 }
 
 async function removeShare(s) {
@@ -207,7 +246,10 @@ async function removeShare(s) {
   emit('shares-changed', shares.value.length)
   try {
     await call('frappe_sheets_next.api.unshare_sheet', { name: props.sheetId, user: s.user })
-  } catch (_) { await fetchShares() }
+  } catch (err) {
+    _flashError(err)
+    await fetchShares()
+  }
 }
 
 // ── search ─────────────────────────────────────────────────────────────────
@@ -255,9 +297,10 @@ async function inviteUser(u) {
   emit('shares-changed', shares.value.length)
   try {
     await call('frappe_sheets_next.api.share_sheet', { name: props.sheetId, user: u.name, write: 0 })
-  } catch (_) {
+  } catch (err) {
     shares.value = shares.value.filter(s => s.user !== u.name)
     emit('shares-changed', shares.value.length)
+    _flashError(err)
   }
 }
 
@@ -267,6 +310,10 @@ async function copyLink() {
 </script>
 
 <style scoped>
+/* Inline error banner — sits above the dialog body for permission / network
+   failures from any of the share endpoints. */
+.sd-error { display: block; margin: 0 0 12px; max-width: 100%; }
+
 /* ── Labels ── */
 .sd-label {
   font-size: 13px; font-weight: 500; color: var(--ink-gray-6);

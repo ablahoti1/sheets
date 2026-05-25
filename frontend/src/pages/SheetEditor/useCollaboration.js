@@ -1,29 +1,36 @@
 import { ref, watch, onUnmounted } from 'vue'
-import { call }                    from '../../utils/api.js'
-
-// ── Constants ──────────────────────────────────────────────────────────────────
-
-const PING_INTERVAL = 15_000   // ms between presence heartbeats
-const EXPIRE_AFTER  = 35_000   // ms of silence before a peer is removed
-const DEBOUNCE_MS   = 80       // ms to coalesce rapid cell edits
+import { call }                        from '../../utils/api.js'
+import { createYDoc, hydrateYDoc }     from '../../collab/ydoc.js'
+import { bindCells }                   from '../../collab/cells-binding.js'
+import { createFrappeProvider }        from '../../collab/frappe-provider.js'
+import { createRealtimeAdapter }       from '../../collab/realtime-adapter.js'
+import { createAwareness }             from '../../collab/awareness.js'
 
 // Collaboration cursor palette — 8 distinct colours not covered by Espresso tokens.
 export const CURSOR_PALETTE = ['#4285F4', '#EA4335', '#34A853', '#FBBC05', '#AB47BC', '#00ACC1', '#FF7043', '#8D6E63']
 
 function hashUserColor(user) {
   let hash = 0
-  for (const char of user) hash = (hash * 31 + char.charCodeAt(0)) & 0xFFFFFFFF
+  for (const char of (user || '')) hash = (hash * 31 + char.charCodeAt(0)) & 0xFFFFFFFF
   return CURSOR_PALETTE[Math.abs(hash) % CURSOR_PALETTE.length]
 }
 
-// ── Composable ─────────────────────────────────────────────────────────────────
-
 /**
- * Unified collaboration composable that handles both presence (who is viewing)
- * and live-sync (remote cell ops and cursor broadcasts).
+ * Unified collaboration composable powered by a Yjs document per sheet.
  *
- * A single `_start` / `_stop` lifecycle manages all realtime listeners so there
- * is only one watcher and one unmount teardown.
+ *   * Cell edits are mirrored via a Y.Map binding so concurrent writes
+ *     converge automatically — no more last-write-wins data loss.
+ *   * Presence and cursor positions live in Yjs awareness — one volatile
+ *     channel shared with the same transport.
+ *   * The previous bespoke `broadcast_op` / `sheet_cursor` / `ping_presence`
+ *     flow is retired; the backend endpoints still exist but are no longer
+ *     called from the editor.
+ *
+ * The external API (`presentUsers`, `remoteCursors`, `broadcastCellChange`,
+ * `broadcastBatchChange`, `broadcastCursor`) is preserved so index.vue
+ * doesn't need to change — the broadcast functions are now no-ops for cells
+ * (the patched `sheet.setCell` from `bindCells` handles publishing) and
+ * thin awareness setters for the cursor.
  *
  * @param {{
  *   sheetId:        import('vue').Ref<string>,
@@ -32,7 +39,6 @@ function hashUserColor(user) {
  *   repopulateGrid: () => void,
  *   _self?:         string,
  *   _realtime?:     { on: Function, off: Function },
- *   _callFn?:       (method: string, args: object) => Promise<any>,
  *   _watch?:        typeof watch,
  *   _onUnmounted?:  typeof onUnmounted,
  * }} opts
@@ -48,146 +54,155 @@ export function useCollaboration({
   _watch       = watch,
   _onUnmounted = onUnmounted,
 }) {
-  // ── Presence state ───────────────────────────────────────────────────────────
+  const presentUsers  = ref([])           // other users currently viewing
+  const remoteCursors = ref(new Map())    // userId → { row, col, subSheet, color, ... }
 
-  const presentUsers = ref([])           // other users currently viewing — not self
-  const _peers       = new Map()         // user → { data, timerId }
-  let   _pingTimer   = null
-
-  // ── Live-sync state ──────────────────────────────────────────────────────────
-
-  // user → { row, col, subSheet, color, fullName, initials }
-  const remoteCursors = ref(new Map())
-
+  let _doc       = null
+  let _provider  = null
+  let _awareness = null
+  let _binding   = null
   let _sheetId   = null
-  let _pending   = new Map()            // subSheet → Map<cellId, value>
-  let _flushTimer = null
 
-  // ── Shared lifecycle flag ────────────────────────────────────────────────────
+  // ── Outbound API (kept for backwards-compatibility with index.vue) ──────────
 
-  let _listening = false
-
-  // ── Presence handlers ────────────────────────────────────────────────────────
-
-  function _onPresence(data) {
-    if (!data || data.sheet !== _sheetId || data.user === _self) return
-    const existing = _peers.get(data.user)
-    if (existing?.timerId) clearTimeout(existing.timerId)
-    const timerId = setTimeout(() => { _peers.delete(data.user); _syncPresentUsers() }, EXPIRE_AFTER)
-    _peers.set(data.user, { ...data, timerId })
-    _syncPresentUsers()
+  function broadcastCellChange(/* subSheet, id, value */) {
+    // No-op: local writes are mirrored to the Y.Doc by bindCells's patched
+    // sheet.setCell, then republished by the Frappe provider. Keeping this
+    // function so index.vue's call sites compile without edits.
   }
 
-  function _syncPresentUsers() {
-    presentUsers.value = [..._peers.values()].map(
-      ({ user, full_name, initials, user_image }) => ({ user, full_name, initials, user_image })
-    )
+  function broadcastBatchChange(/* subSheet, cellChanges */) {
+    // Same reasoning as broadcastCellChange.
   }
 
-  function _ping() {
-    if (!_sheetId) return
-    _callFn('frappe_sheets_next.api.ping_presence', { name: _sheetId }).catch(() => {})
+  function broadcastCursor(row, col, subSheet, range = null) {
+    // `range` is the full selection rectangle ({r0,c0,r1,c1}); peers paint
+    // it as the "where this user is selected" outline. If absent (e.g.
+    // legacy callers), the remote painter falls back to a single-cell rect
+    // at the anchor.
+    _awareness?.setLocalState({ cursor: { row, col, range, subSheet } })
   }
 
-  // ── Live-sync broadcast ──────────────────────────────────────────────────────
+  // ── Awareness → reactive refs ───────────────────────────────────────────────
 
-  function broadcastCellChange(subSheet, id, value) {
-    if (!_sheetId) return
-    _enqueue(subSheet, [[id, value]])
-  }
+  function _syncFromAwareness() {
+    if (!_awareness) return
+    const peers   = _awareness.getStates()    // already excludes our clientId
+    const users   = []
+    const cursors = new Map()
+    const seen    = new Set()                  // dedupe presence by user id
 
-  function broadcastBatchChange(subSheet, cellChanges) {
-    if (!_sheetId) return
-    _enqueue(subSheet, cellChanges.map(change => [change.id, change.value]))
-  }
-
-  function _enqueue(subSheet, pairs) {
-    if (!_pending.has(subSheet)) _pending.set(subSheet, new Map())
-    const cellMap = _pending.get(subSheet)
-    for (const [id, value] of pairs) cellMap.set(id, value)
-    clearTimeout(_flushTimer)
-    _flushTimer = setTimeout(_flush, DEBOUNCE_MS)
-  }
-
-  function _flush() {
-    if (!_sheetId) { _pending = new Map(); return }
-    for (const [subSheet, cellMap] of _pending) {
-      const op = JSON.stringify({ type: 'cells', subSheet, cells: Object.fromEntries(cellMap) })
-      _callFn('frappe_sheets_next.api.broadcast_op', { name: _sheetId, op }).catch(() => {})
+    for (const state of peers.values()) {
+      const user = state?.user
+      if (!user || !user.id || user.id === _self) continue
+      if (!seen.has(user.id)) {
+        seen.add(user.id)
+        users.push({
+          user:        user.id,
+          full_name:   user.fullName,
+          initials:    user.initials,
+          user_image:  user.image,
+        })
+      }
+      if (state.cursor) {
+        // Fallback range = single anchor cell (back-compat with peers that
+        // haven't upgraded to the range-aware payload yet).
+        const c = state.cursor
+        const range = c.range || { r0: c.row, c0: c.col, r1: c.row, c1: c.col }
+        cursors.set(user.id, {
+          row:      c.row,
+          col:      c.col,
+          range,
+          subSheet: c.subSheet,
+          color:    hashUserColor(user.id),
+          fullName: user.fullName,
+          initials: user.initials,
+        })
+      }
     }
-    _pending = new Map()
+    presentUsers.value  = users
+    remoteCursors.value = cursors
   }
 
-  function broadcastCursor(row, col, subSheet) {
-    if (!_sheetId) return
-    _callFn('frappe_sheets_next.api.broadcast_cursor',
-      { name: _sheetId, r: row, c: col, sub_sheet: subSheet }).catch(() => {})
-  }
-
-  // ── Live-sync receive ────────────────────────────────────────────────────────
-
-  function _onOp(data) {
-    if (!data || data.sheet !== _sheetId || data.user === _self) return
-    let op
-    try { op = JSON.parse(data.op) } catch { return }
-    if (op.type !== 'cells') return
-    const sheet = getSheet()
-    for (const [id, value] of Object.entries(op.cells)) sheet.setCell(id, value, op.subSheet)
-    // onCellChanged fires for every setCell — correct for the current sub-sheet but
-    // contaminates the canvas for cross-sheet ops; repopulate to restore correct state.
-    if (op.subSheet !== currentSheet.value) repopulateGrid()
-  }
-
-  function _onCursor(data) {
-    if (!data || data.sheet !== _sheetId || data.user === _self) return
-    const next = new Map(remoteCursors.value)
-    next.set(data.user, {
-      row:      data.r,
-      col:      data.c,
-      subSheet: data.sub_sheet,
-      color:    hashUserColor(data.user),
-      fullName: data.full_name,
-      initials: data.initials,
-    })
-    remoteCursors.value = next
-  }
-
-  // ── Shared lifecycle ─────────────────────────────────────────────────────────
+  // ── Lifecycle ───────────────────────────────────────────────────────────────
 
   function _start(docId) {
-    if (_listening) _stop()
-    _sheetId   = docId
-    _listening = true
+    if (_doc) _stop()
+    _sheetId = docId
 
-    // Presence listeners
-    _realtime?.on('sheet_presence', _onPresence)
-    _ping()
-    _pingTimer = setInterval(_ping, PING_INTERVAL)
+    const sheet  = getSheet()
+    const identity = _readUserIdentity()
 
-    // Live-sync listeners
-    _realtime?.on('sheet_op',     _onOp)
-    _realtime?.on('sheet_cursor', _onCursor)
+    // 1. New Y.Doc and seed it from the current engine state. Late peers'
+    //    state-sync replay will overwrite this with the authoritative copy
+    //    of the first peer to join, so seeding the first peer's view is
+    //    enough — Yjs convergence handles the rest.
+    _doc = createYDoc()
+    hydrateYDoc(_doc, { sheet: sheet?.snapshot?.() })
+
+    // 2. Patch sheet.setCell so every write also lands in Y.Map; observe
+    //    remote writes and apply them through the engine. Cross-sheet
+    //    remote writes still need a full canvas repopulate because the
+    //    engine's onCellChanged callback paints to the active grid only.
+    _binding = bindCells({
+      doc: _doc,
+      sheet,
+      onRemoteSheetChange(name) {
+        if (name !== currentSheet.value) repopulateGrid()
+      },
+    })
+
+    // 3. Realtime adapter (publish via yjs_relay API + subscribe via
+    //    frappe.realtime), then a custom Yjs provider on top of it.
+    const adapter = createRealtimeAdapter({
+      sheetId:  _sheetId,
+      realtime: _realtime,
+      callFn:   _callFn,
+    })
+    _provider = createFrappeProvider({ doc: _doc, sheetId: _sheetId, realtime: adapter })
+
+    // 4. Awareness reuses the provider's self tag so a single clientId
+    //    serves both the CRDT sync and presence — easier debugging,
+    //    consistent dedupe.
+    _awareness = createAwareness({
+      sheetId:  _sheetId,
+      realtime: adapter,
+      clientId: _provider.tag,
+      initial:  { user: identity, cursor: null },
+    })
+    _awareness.on('change', _syncFromAwareness)
+    _syncFromAwareness()
   }
 
   function _stop() {
-    if (!_listening) return
-
-    // Presence teardown
-    _realtime?.off('sheet_presence', _onPresence)
-    clearInterval(_pingTimer)
-    for (const { timerId } of _peers.values()) clearTimeout(timerId)
-    _peers.clear()
-    presentUsers.value = []
-
-    // Live-sync teardown
-    clearTimeout(_flushTimer)
-    _realtime?.off('sheet_op',     _onOp)
-    _realtime?.off('sheet_cursor', _onCursor)
-    _pending            = new Map()
+    _binding?.dispose()
+    _awareness?.destroy()
+    _provider?.destroy()
+    _doc?.destroy()
+    _binding = _awareness = _provider = _doc = null
+    _sheetId = null
+    presentUsers.value  = []
     remoteCursors.value = new Map()
+  }
 
-    _listening = false
-    _sheetId   = null
+  function _readUserIdentity() {
+    const id = _self
+    // Guard against `window` being undefined (tests run in node) — the
+    // composable should still function with just an id.
+    const w = (typeof window !== 'undefined') ? window : undefined
+    const fullName = w?.frappe?.session?.user_fullname
+      || w?.frappe?.boot?.user_info?.[id]?.fullname
+      || id
+      || 'Anonymous'
+    const parts = String(fullName).split(' ').filter(Boolean)
+    const initials = ((parts[0]?.[0] || '?')
+      + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase()
+    return {
+      id,
+      fullName: String(fullName),
+      initials,
+      image: w?.frappe?.boot?.user_info?.[id]?.image || '',
+    }
   }
 
   _watch(sheetId, docId => {
@@ -197,11 +212,20 @@ export function useCollaboration({
 
   _onUnmounted(_stop)
 
+  // Conflict-aware undo support — index.vue's history pulls this between
+  // pushes to remember which cells *this* client touched in each undo
+  // segment. When collab is off (no binding), there's nothing to drain so
+  // we return an empty set and undo falls back to the snapshot restore.
+  function drainLocalTouches() {
+    return _binding?.drainLocalTouches?.() || new Set()
+  }
+
   return {
     presentUsers,
     remoteCursors,
     broadcastCellChange,
     broadcastBatchChange,
     broadcastCursor,
+    drainLocalTouches,
   }
 }

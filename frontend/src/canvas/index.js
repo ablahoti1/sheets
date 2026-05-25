@@ -1,7 +1,7 @@
 import { createGeometry } from './geometry.js'
 import { createRenderer } from './renderer.js'
 import { createOverlay }  from './overlay.js'
-import { TOTAL_ROWS, TOTAL_COLS, DEFAULT_ROW_H, ROW_HEADER_W, COL_HEADER_H, setTotalRows } from './constants.js'
+import { TOTAL_ROWS, TOTAL_COLS, DEFAULT_ROW_H, ROW_HEADER_W, COL_HEADER_H, setTotalRows, setTotalCols } from './constants.js'
 import { cellId, colLabel, parseCellId } from '../utils/cells.js'
 import { AC_FUNS, AC_FUN_KEYS, parseAcToken } from '../utils/formula-ac.js'
 
@@ -104,25 +104,30 @@ export function createGrid(canvas, { onSelect, onCommit, onInput, onCancel, getF
 
   // Visible column header rects for DOM overlays (filter chevrons, etc).
   // Returns [{c, x, width}] for frozen + currently-visible non-frozen columns.
+  // Rect returners are CONTRACTED to return canvas-local CSS pixels (what
+  // the DOM uses), not the engine's logical units. `geo.colX/cw/rowY/rh`
+  // are logical; we multiply by `_zoom` here so callers can drop their
+  // own multiplications and so the chevron / fill-handle / pivot FAB
+  // overlays line up at every zoom level.
   function getColumnHeaderRects() {
     const rects = []
     const fc = freeze.cols || 0
-    for (let c = 0; c < fc; c++) rects.push({ c, x: geo.colX(c), width: geo.cw(c) })
+    for (let c = 0; c < fc; c++) rects.push({ c, x: geo.colX(c) * _zoom, width: geo.cw(c) * _zoom })
     const c0 = geo.firstVisCol()
     const c1 = geo.lastVisCol(c0, cssW)
-    for (let c = c0; c <= c1; c++) rects.push({ c, x: geo.colX(c), width: geo.cw(c) })
+    for (let c = c0; c <= c1; c++) rects.push({ c, x: geo.colX(c) * _zoom, width: geo.cw(c) * _zoom })
     return rects
   }
 
   // Row-0 rect — the user's header row of data. Used to position filter chevrons.
   function getRow0Rect() {
-    return { y: geo.rowY(0), height: geo.rh(0) }
+    return { y: geo.rowY(0) * _zoom, height: geo.rh(0) * _zoom }
   }
 
   // Rect for any row by index — lets ranged-filter chevrons sit on the range's
   // header row (which may be row 0 or any other row).
   function getRowRect(r) {
-    return { y: geo.rowY(r), height: geo.rh(r) }
+    return { y: geo.rowY(r) * _zoom, height: geo.rh(r) * _zoom }
   }
 
   // ── Selection ────────────────────────────────────────────────────────────────
@@ -190,8 +195,20 @@ export function createGrid(canvas, { onSelect, onCommit, onInput, onCancel, getF
 
   function extendSel(r, c) {
     selEnd = geo.clamp(r, c)
-    ensureVisible(selEnd.r, selEnd.c)
+    // ensureVisible target depends on selMode. For a whole-column selection
+    // selEnd.r is pinned to the last row, so scrolling to it on a sideways
+    // extend would jump us to the bottom of the new column — not what the
+    // user expects from Shift+Right on a column header. Same in reverse for
+    // whole-row selections.
+    if (selMode === 'col')      ensureVisible(0,         selEnd.c)
+    else if (selMode === 'row') ensureVisible(selEnd.r,  0)
+    else                        ensureVisible(selEnd.r,  selEnd.c)
     render()
+    // Re-emit onSelect so subscribers (collab cursor broadcaster) see the
+    // new range. The anchor cell id is unchanged here — callers that care
+    // about anchor identity short-circuit on equality; callers that fetch
+    // grid.getSelection() pick up the extended range.
+    onSelect?.(cellId(sel.r, sel.c))
   }
 
   // Jump to data-region edge (Cmd+Arrow behaviour matching Google Sheets)
@@ -1122,6 +1139,25 @@ export function createGrid(canvas, { onSelect, onCommit, onInput, onCancel, getF
     const isArrow = ['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key)
     const dirs   = { ArrowUp:[-1,0], ArrowDown:[1,0], ArrowLeft:[0,-1], ArrowRight:[0,1] }
 
+    // Cmd/Ctrl+A — Excel/Sheets pattern: first press selects the data region
+    // (A1 → last used cell), second press expands to the entire grid. Empty
+    // sheets jump straight to the whole-grid selection.
+    if (mod && (e.key === 'a' || e.key === 'A')) {
+      e.preventDefault()
+      const last = _lastUsedCell()
+      const hasData = last.r > 0 || last.c > 0 || data[cellId(0, 0)] !== undefined
+      const cur = getSelRange()
+      const onDataRegion = hasData
+        && cur.r0 === 0 && cur.c0 === 0
+        && cur.r1 === last.r && cur.c1 === last.c
+      if (!hasData || onDataRegion) {
+        setSelRange({ r0: 0, c0: 0, r1: TOTAL_ROWS - 1, c1: TOTAL_COLS - 1, mode: 'all' })
+      } else {
+        setSelRange({ r0: 0, c0: 0, r1: last.r, c1: last.c, mode: 'cell' })
+      }
+      return
+    }
+
     // Cmd+Arrow / Cmd+Shift+Arrow — jump to data-region edge
     if (mod && isArrow) {
       e.preventDefault()
@@ -1324,6 +1360,14 @@ export function createGrid(canvas, { onSelect, onCommit, onInput, onCancel, getF
 
   function getTotalRows() { return TOTAL_ROWS }
 
+  function expandCols(by = 1) {
+    setTotalCols(TOTAL_COLS + by)
+    _applyCanvasSize()
+    render()
+  }
+
+  function getTotalCols() { return TOTAL_COLS }
+
   function setZoom(z) {
     _zoom = Math.max(0.5, Math.min(2.5, z))
     _applyCanvasSize()
@@ -1353,6 +1397,7 @@ export function createGrid(canvas, { onSelect, onCommit, onInput, onCancel, getF
       hiddenRows: Array.from(hiddenRows),
       hiddenCols: Array.from(hiddenCols),
       totalRows:  TOTAL_ROWS,
+      totalCols:  TOTAL_COLS,
       zoom:       _zoom,
     }
   }
@@ -1370,6 +1415,7 @@ export function createGrid(canvas, { onSelect, onCommit, onInput, onCancel, getF
     hiddenCols.clear()
     for (const c of (snap.hiddenCols || [])) hiddenCols.add(c)
     if (typeof snap.totalRows === 'number') setTotalRows(snap.totalRows)
+    if (typeof snap.totalCols === 'number') setTotalCols(snap.totalCols)
     if (typeof snap.zoom === 'number')      _zoom = Math.max(0.5, Math.min(2.5, snap.zoom))
     _applyCanvasSize()
     render()
@@ -1388,13 +1434,16 @@ export function createGrid(canvas, { onSelect, onCommit, onInput, onCancel, getF
     setFreeze, setHiddenRows, setHiddenCols, getHiddenRows, getHiddenCols,
     getColumnHeaderRects, getRow0Rect, getRowRect, onRender,
     setMarchingAnts,
-    // Pixel rect (canvas-local CSS coords) for one cell — drives popovers
-    // anchored to a cell, e.g. the auto-fill options menu.
-    getCellRect: (r, c) => ({ x: geo.colX(c), y: geo.rowY(r),
-                              width: geo.cw(c), height: geo.rh(r) }),
+    // Pixel rect (canvas-local CSS coords, zoom-applied) for one cell —
+    // drives popovers anchored to a cell (auto-fill menu, pivot FAB, remote
+    // cursor overlay, etc.). DO NOT multiply by zoom in callers — already
+    // included here.
+    getCellRect: (r, c) => ({ x: geo.colX(c) * _zoom, y: geo.rowY(r) * _zoom,
+                              width: geo.cw(c) * _zoom, height: geo.rh(r) * _zoom }),
     setDiffOverlay, setActiveDiffSheet,
     autoFitCol, autoFitRow,
     expandRows, getTotalRows, isNearBottom,
+    expandCols, getTotalCols,
     setZoom, getZoom,
     viewSnapshot, viewRestore,
     destroy,

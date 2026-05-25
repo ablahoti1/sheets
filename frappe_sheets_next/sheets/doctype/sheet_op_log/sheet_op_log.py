@@ -6,6 +6,11 @@ from frappe.model.document import Document
 # meaningful summaries without a per-op switch statement.  Add to this set
 # rather than inventing new values at the call site.
 VALID_OP_TYPES = {
+	# ── Lifecycle (written by versioning.save) ─────────────────────────
+	"create",        # initial save when a new Sheet is inserted
+	"save",          # subsequent save events advancing the head pointer
+	"restore",       # non-destructive restore of a snapshot
+	# ── User actions ───────────────────────────────────────────────────
 	"edit",          # single-cell typed edit
 	"paste",         # paste from clipboard (internal or external)
 	"fill",          # drag-fill / fill series
@@ -26,7 +31,7 @@ VALID_OP_TYPES = {
 	"validation",
 	"comment",
 	"cond-format",
-	"restore",       # version restore (creates new op alongside the save)
+	"chart",         # chart add / edit / move / resize / delete
 }
 
 
@@ -37,14 +42,15 @@ class SheetOpLog(Document):
 	if TYPE_CHECKING:
 		from frappe.types import DF
 
+		actor: DF.Link | None
 		after_json: DF.LongText | None
 		before_json: DF.LongText | None
 		cell_refs: DF.LongText | None
 		op_type: DF.Data
+		seq: DF.Int
 		sheet: DF.Link
 		sub_sheet: DF.Data | None
 		summary: DF.Data | None
-		version: DF.Link | None
 	# end: auto-generated types
 
 	def validate(self):

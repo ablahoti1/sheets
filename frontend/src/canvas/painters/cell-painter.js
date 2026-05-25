@@ -42,10 +42,17 @@ export function createCellPainter(ctx, { cw, rh, colX, rowY }) {
 
     const condFmt = getCondFormat ? getCondFormat(id, val ?? '') : null
     _drawCellBackground(x, y, w, h, merge, fmt, condFmt)
+    // Data-bar from a `kind:'data-bar'` cond-format rule. Renders between
+    // the cell background and the text so values stay readable on top.
+    if (condFmt?.dataBar) _drawDataBar(x, y, w, h, condFmt.dataBar)
     if (getDiffFor && getDiffFor(id)) _drawDiffOverlay(x, y, w, h)
 
     if (getComment?.(id))     _drawCommentTriangle(x, y, w)
     if (getValidation?.(id))  _drawDropdownArrow(x, y, w, h)
+
+    // Icon from a `kind:'icon-set'` cond-format rule. Drawn at the cell's
+    // left edge and shifts the text area right so they don't overlap.
+    const iconInset = condFmt?.icon ? _drawCellIcon(x, y, h, condFmt.icon) : 0
 
     if (val == null || val === '') return
 
@@ -54,8 +61,9 @@ export function createCellPainter(ctx, { cw, rh, colX, rowY }) {
     const efmt = { ...baseFmt, align: baseFmt.align || _autoAlign(s) }
     const rightInset = getRightInset ? (getRightInset(id) || 0) : 0
     _setCellFont(efmt)
-    if (efmt.wrapText) _drawWrappedText(s, x, y, w, h, efmt, rightInset)
-    else               _drawCellText(x, y, w, h, s, efmt, rightInset)
+    // Honour the icon's left-side reservation by shrinking the text rect.
+    if (efmt.wrapText) _drawWrappedText(s, x + iconInset, y, w - iconInset, h, efmt, rightInset)
+    else               _drawCellText(x + iconInset, y, w - iconInset, h, s, efmt, rightInset)
   }
 
   function _drawCellBackground(x, y, w, h, merge, fmt, condFmt) {
@@ -68,6 +76,97 @@ export function createCellPainter(ctx, { cw, rh, colX, rowY }) {
       ctx.fillStyle = bg
       ctx.fillRect(x, y, w, h)
     }
+  }
+
+  // Horizontal data bar inside the cell — width is the rule's normalised
+  // value (0..1). Stays a couple of px shy of the cell edges so it reads
+  // as a separate visual layer from the cell background.
+  function _drawDataBar(x, y, w, h, bar) {
+    const PAD = 2
+    const innerW = Math.max(0, w - PAD * 2)
+    const innerH = Math.max(0, h - PAD * 2)
+    if (!innerW || !innerH) return
+    const t = Math.max(0, Math.min(1, bar.value || 0))
+    const fillW = Math.round(innerW * t)
+    if (!fillW) return
+    ctx.save()
+    ctx.fillStyle = bar.negative ? (bar.negativeColor || '#dc2626') : (bar.color || '#0E7490')
+    // Faint background channel so partial bars don't look like fixed-width
+    // shapes drifting in space.
+    ctx.globalAlpha = 0.18
+    ctx.fillRect(x + PAD, y + PAD, innerW, innerH)
+    ctx.globalAlpha = 0.55
+    ctx.fillRect(x + PAD, y + PAD, fillW, innerH)
+    ctx.restore()
+  }
+
+  // Render the icon at the left edge of the cell. Returns the reserved
+  // horizontal space so the text painter can shift right.
+  function _drawCellIcon(x, y, h, icon) {
+    const size  = 11
+    const PAD   = 4
+    const cx    = x + PAD + size / 2
+    const cy    = y + h / 2
+    ctx.save()
+    ctx.fillStyle = icon.color || '#737373'
+    switch (icon.shape) {
+      case 'arrow-up':
+        ctx.beginPath()
+        ctx.moveTo(cx, cy - size / 2)
+        ctx.lineTo(cx + size / 2, cy + size / 2)
+        ctx.lineTo(cx - size / 2, cy + size / 2)
+        ctx.closePath()
+        ctx.fill()
+        break
+      case 'arrow-down':
+        ctx.beginPath()
+        ctx.moveTo(cx, cy + size / 2)
+        ctx.lineTo(cx + size / 2, cy - size / 2)
+        ctx.lineTo(cx - size / 2, cy - size / 2)
+        ctx.closePath()
+        ctx.fill()
+        break
+      case 'arrow-right':
+        ctx.beginPath()
+        ctx.moveTo(cx + size / 2, cy)
+        ctx.lineTo(cx - size / 2, cy + size / 2)
+        ctx.lineTo(cx - size / 2, cy - size / 2)
+        ctx.closePath()
+        ctx.fill()
+        break
+      case 'circle':
+        ctx.beginPath()
+        ctx.arc(cx, cy, size / 2, 0, Math.PI * 2)
+        ctx.fill()
+        break
+      case 'circle-empty':
+        ctx.beginPath()
+        ctx.arc(cx, cy, size / 2, 0, Math.PI * 2)
+        ctx.lineWidth = 1.5
+        ctx.strokeStyle = icon.color || '#737373'
+        ctx.stroke()
+        break
+      case 'circle-half':
+        ctx.beginPath()
+        ctx.arc(cx, cy, size / 2, Math.PI / 2, -Math.PI / 2)
+        ctx.fill()
+        ctx.beginPath()
+        ctx.arc(cx, cy, size / 2, 0, Math.PI * 2)
+        ctx.lineWidth = 1.5
+        ctx.strokeStyle = icon.color || '#737373'
+        ctx.stroke()
+        break
+      case 'circle-full':
+        ctx.beginPath()
+        ctx.arc(cx, cy, size / 2, 0, Math.PI * 2)
+        ctx.fill()
+        break
+      default:
+        // Unknown shape — fail quiet rather than crash a render.
+        break
+    }
+    ctx.restore()
+    return size + PAD * 2
   }
 
   // Diff overlay: translucent teal wash painted on top of the cell background

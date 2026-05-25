@@ -6,13 +6,14 @@
  "engine": "InnoDB",
  "field_order": [
   "sheet",
+  "seq",
   "sub_sheet",
   "op_type",
   "cell_refs",
   "before_json",
   "after_json",
   "summary",
-  "version"
+  "actor"
  ],
  "fields": [
   {
@@ -21,7 +22,15 @@
    "label": "Sheet",
    "options": "Sheet",
    "reqd": 1,
-   "in_standard_filter": 1
+   "in_standard_filter": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "seq",
+   "fieldtype": "Long Int",
+   "label": "Op-log sequence",
+   "description": "Monotonic per-sheet sequence number.",
+   "search_index": 1
   },
   {
    "fieldname": "sub_sheet",
@@ -56,10 +65,10 @@
    "label": "Summary"
   },
   {
-   "fieldname": "version",
+   "fieldname": "actor",
    "fieldtype": "Link",
-   "label": "Linked Version",
-   "options": "Version"
+   "label": "Actor",
+   "options": "User"
   }
  ],
  "index_web_pages_for_search": 0,

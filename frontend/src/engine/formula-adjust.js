@@ -25,3 +25,30 @@ export function adjustFormula(formula, dr, dc) {
     _shiftRef(cDollar, colStr.toUpperCase(), rDollar, rowStr, dr, dc)
   )
 }
+
+// Replace every `oldSheetName!` prefix in a formula with `newSheetName!`.
+// Sheet names can contain spaces, so the pattern must be flexible:
+//   * Sheet names appear immediately before a `!`.
+//   * Surrounded by quotes if they contain spaces (Excel uses single quotes,
+//     we accept them too): `'My Sheet'!A1` ↔ `My Sheet!A1`.
+//
+// Preserves the quoting style of each occurrence so the formula reads the
+// same after the rename.
+export function renameSheetInFormula(formula, oldName, newName) {
+  if (!formula || typeof formula !== 'string' || !formula.startsWith('=')) return formula
+  if (!oldName || !newName || oldName === newName) return formula
+
+  // Escape regex metachars in the old name.
+  const esc = oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  // Two variants:
+  //   1.  'Old Name'!     →  quoted form (any chars between the quotes)
+  //   2.  Old Name!       →  unquoted; only valid when name has no quote chars
+  // We match both and choose the appropriate replacement style for the new name.
+  const needsQuotes = /[\s'!]/.test(newName)
+  const replacement = needsQuotes ? `'${newName.replace(/'/g, "''")}'!` : `${newName}!`
+
+  return formula
+    // Quoted form first so we don't double-replace.
+    .replace(new RegExp(`'${esc}'!`, 'g'), replacement)
+    .replace(new RegExp(`(?<![A-Za-z0-9_'])${esc}!`, 'g'), replacement)
+}
