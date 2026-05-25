@@ -3,7 +3,7 @@ app_title = "Sheets"
 app_publisher = "Asif"
 app_description = "Spreadsheet app for Frappe"
 app_email = "asif@frappe.io"
-app_license = "mit"
+app_license = "GNU AGPL v3"
 app_logo_url = "/assets/sheets/logo.svg"
 
 # Apps
