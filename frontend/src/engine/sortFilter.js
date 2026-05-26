@@ -23,6 +23,21 @@ export function createSortFilter(sheet) {
   function _inCols(colIdx, range) { return colIdx >= range.c0 && colIdx <= range.c1 }
 
   function _getRows() {
+    return _buildRows(id => sheet.getCell(id))
+  }
+
+  // Same shape as _getRows but each cell is the *displayed* (formula-evaluated)
+  // value rather than the raw stored cell. Used by the filter so a row whose
+  // visible value is "306" (from `=A1*B1`) matches a "contains 0" predicate
+  // — matching against the raw `=A1*B1` would not.
+  function _getDisplayRows() {
+    const get = sheet.getDisplayValue
+      ? id => sheet.getDisplayValue(id)
+      : id => sheet.getCell(id)
+    return _buildRows(get)
+  }
+
+  function _buildRows(get) {
     const data = sheet.getRawData()
     let maxR = 0, maxC = 0
     for (const id of Object.keys(data)) {
@@ -32,7 +47,7 @@ export function createSortFilter(sheet) {
     const rows = []
     for (let r = 0; r <= maxR; r++) {
       const row = []
-      for (let c = 0; c <= maxC; c++) row.push(sheet.getCell(colLabel(c) + (r + 1)))
+      for (let c = 0; c <= maxC; c++) row.push(get(colLabel(c) + (r + 1)))
       rows.push(row)
     }
     return rows
@@ -126,7 +141,7 @@ export function createSortFilter(sheet) {
     if (!e?.range) return hidden
     const entries = Object.entries(e.byCol)
     if (!entries.length) return hidden
-    const rows = _getRows()
+    const rows = _getDisplayRows()
     const start = e.range.r0 + 1, end = Math.min(e.range.r1, rows.length - 1)
     for (let ri = start; ri <= end; ri++) {
       if (_rowFails(rows[ri], entries)) hidden.add(ri)

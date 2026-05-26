@@ -1,12 +1,16 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { createSortFilter } from './sortFilter.js'
 
-function makeSheet(initial = {}) {
+function makeSheet(initial = {}, displayOverrides = {}) {
   const store = { ...initial }
   return {
     getRawData: () => store,
     getCell: id => store[id] ?? '',
     setCell: (id, v) => { store[id] = v },
+    // Mirrors the real engine: formula cells return their evaluated value
+    // via getDisplayValue. Test passes `displayOverrides` to stub the result
+    // of any cell whose raw value would otherwise be a formula string.
+    getDisplayValue: id => displayOverrides[id] ?? store[id] ?? '',
   }
 }
 
@@ -94,6 +98,27 @@ describe('createSortFilter — ranged + per-sheet filters', () => {
     it('does not leak between sheets', () => {
       sf.setFilter(1, { operator: 'gt', value: '99' }, 'Sheet1')
       expect(sf.computeHiddenRows('Sheet2').size).toBe(0)
+    })
+
+    it('matches against the displayed (evaluated) value, not the raw formula', () => {
+      // B3 / B4 store formulas; the engine resolves them to 306 / 6.
+      // A "contains 0" filter on B must match B3 (306 contains "0") but not
+      // B4 (6 does not). With raw-cell comparison, neither "=A1*B1" nor
+      // "=B5-B6" contains "0", so the regression returned both rows hidden.
+      const formulaSheet = makeSheet({
+        A2: 'Name', B2: 'Score',
+        A3: 'alice', B3: '=A1*B1',
+        A4: 'bob',   B4: '=B5-B6',
+      }, {
+        B3: '306',
+        B4: '6',
+      })
+      const fsf = createSortFilter(formulaSheet)
+      fsf.setRange({ r0: 1, c0: 0, r1: 3, c1: 1 }, 'Sheet1')
+      fsf.setFilter(1, { operator: 'contains', value: '0' }, 'Sheet1')
+      const hidden = fsf.computeHiddenRows('Sheet1')
+      expect(hidden.has(2)).toBe(false)   // B3 → "306" — kept
+      expect(hidden.has(3)).toBe(true)    // B4 → "6"   — hidden
     })
   })
 
