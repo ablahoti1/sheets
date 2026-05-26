@@ -149,6 +149,15 @@ jobs:
           npm ci
           npm run build
 
+      - name: Create /assets symlinks for built bundles
+        # Werkzeug (used by `bench start`) serves /assets/<app>/... from
+        # sites/assets/<app>/, which is a symlink into the app's public/
+        # folder. `bench init --skip-assets` and `bench get-app --skip-assets`
+        # both skip creating it, so without this step the JS bundle 404s and
+        # #root never mounts.
+        working-directory: frappe-bench
+        run: bench build --app sheets
+
       - name: Start bench in background
         working-directory: frappe-bench
         run: |
@@ -184,6 +193,14 @@ jobs:
         with:
           name: playwright-report
           path: frappe-bench/apps/sheets/frontend/playwright-report/
+          retention-days: 7
+
+      - name: Upload Playwright test-results (traces, screenshots, videos)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-test-results
+          path: frappe-bench/apps/sheets/frontend/test-results/
           retention-days: 7
 
       - name: Upload bench log on failure
