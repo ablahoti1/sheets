@@ -3441,7 +3441,11 @@ function toggleShowFormulas() {
 /* ── Filter overlay (chevrons sit on row 0 of data — the user's header row) ── */
 /* Covers the full canvas; button positions come from grid.colX() which already
    includes ROW_HEADER_W. The clip-path masks the row-number gutter (left 50px). */
-.sn-filter-overlay { position:absolute; inset:0; pointer-events:none; overflow:hidden; clip-path:inset(0 0 0 50px); }
+/* clip-path keeps chevrons out of the row-header strip on the left (50px =
+   ROW_HEADER_W) AND the column-header strip on top (24px = COL_HEADER_H);
+   without the top inset, the chevrons follow row 0 up over A/B/C/D when
+   the user scrolls past the header row. */
+.sn-filter-overlay { position:absolute; inset:0; pointer-events:none; overflow:hidden; clip-path:inset(24px 0 0 50px); }
 .sn-filter-btn     { position:absolute; border:1px solid var(--outline-gray-2); border-radius:4px; background:rgba(255,255,255,.92); cursor:pointer; pointer-events:all; padding:0; display:flex; align-items:center; justify-content:center; color:var(--ink-gray-7); box-shadow:0 1px 2px rgba(0,0,0,.05); transition:background-color .12s, border-color .12s, color .12s; }
 .sn-filter-btn:hover  { background:var(--surface-white); border-color:var(--outline-gray-4); color:var(--ink-gray-9); }
 .sn-filter-btn.active { background:var(--surface-gray-4); border-color:var(--outline-gray-4); color:var(--ink-gray-9); }
