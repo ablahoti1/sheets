@@ -658,13 +658,18 @@ export function createGrid(canvas, { onSelect, onCommit, onInput, onCancel, getF
         _pickerKbMove(dr, dc, e.shiftKey, mod)
         return
       }
-      // If caret is at a ref-acceptable position, start the picker.
-      if (_isRefPosition(overlay.el)) {
+      // Inside a formula (value starts with `=`) arrows always drive the
+      // picker — even between args, after a comma, etc. _isRefPosition's
+      // finer "REPLACE vs INSERT" check happens inside _pickerKbStart via
+      // _refReplaceStart; gating the picker on it here was eating the
+      // second-range pick in =VLOOKUP(..., …) and dumping the user to the
+      // adjacent cell instead.
+      if (overlay.getValue().startsWith('=')) {
         e.preventDefault()
         _pickerKbStart(overlay.el, dr, dc, e.shiftKey)
         return
       }
-      // Otherwise commit and move selection (normal enter-mode arrow behaviour).
+      // Not a formula — arrow commits and moves like Excel / Google Sheets.
       e.preventDefault()
       _commitAndHide()
       moveSel(sel.r + dr, sel.c + dc)
@@ -1146,8 +1151,11 @@ export function createGrid(canvas, { onSelect, onCommit, onInput, onCancel, getF
       return
     }
 
-    // EDITING mode — only arrow keys with a ref-acceptable caret trigger picker.
-    if (dir && _isRefPosition(target)) {
+    // EDITING mode — any arrow in a `=…` input drives the picker. The tighter
+    // _isRefPosition check is delegated to _pickerKbStart (it picks REPLACE
+    // vs INSERT via _refReplaceStart); gating it here was breaking second-
+    // range picks in =VLOOKUP(..., …).
+    if (dir) {
       e.preventDefault()
       e.stopPropagation()
       _pickerKbStart(target, dir[0], dir[1], e.shiftKey)
