@@ -8,10 +8,21 @@ export function createCellPainter(ctx, { cw, rh, colX, rowY }) {
 
   function drawRegionCells(r0, c0, r1, c1, data, getFormat, getMergeInfo, isSlave, getComment, getValidation, getCondFormat, getRightInset, getDiffFor) {
     ctx.textBaseline = 'middle'
+    // Two-pass paint: every cell's background + decorations first, then
+    // every cell's text. Splitting the passes means an upstream cell's
+    // overflow text (when that mode lands in a follow-up) won't get
+    // overpainted by a downstream cell's background fill in the same
+    // loop iteration. The per-cell cost is unchanged — we just iterate
+    // twice — and the setup work is shared via _cellGeom.
     for (let r = r0; r <= r1; r++) {
       if (rh(r) === 0) continue
       for (let c = c0; c <= c1; c++)
-        _drawCell(r, c, data, getFormat, getMergeInfo, isSlave, getComment, getValidation, getCondFormat, getRightInset, getDiffFor)
+        _paintBgAt(r, c, data, getFormat, getMergeInfo, isSlave, getComment, getValidation, getCondFormat, getDiffFor)
+    }
+    for (let r = r0; r <= r1; r++) {
+      if (rh(r) === 0) continue
+      for (let c = c0; c <= c1; c++)
+        _paintTextAt(r, c, data, getFormat, getMergeInfo, isSlave, getCondFormat, getRightInset)
     }
   }
 
@@ -26,43 +37,56 @@ export function createCellPainter(ctx, { cw, rh, colX, rowY }) {
 
   // ── Cell rendering ───────────────────────────────────────────────────────────
 
-  function _drawCell(r, c, data, getFormat, getMergeInfo, isSlave, getComment, getValidation, getCondFormat, getRightInset, getDiffFor) {
+  // Width reserved on the left of a cell when a cond-format icon is present.
+  // Mirrors _drawCellIcon's `size + PAD * 2` exactly so the text-pass can
+  // compute the same inset without re-drawing the icon.
+  const ICON_INSET = 11 + 4 * 2
+
+  // Shared per-cell geometry + format lookup. Both paint phases call this,
+  // returns null for slave cells (so the caller knows to skip).
+  function _cellGeom(r, c, data, getFormat, getMergeInfo, isSlave, getCondFormat) {
     const id = cellId(r, c)
-    if (isSlave && isSlave(id)) return
-
-    const merge  = getMergeInfo && getMergeInfo(id)
-    const spanC  = merge ? merge.colSpan : 1
-    const spanR  = merge ? merge.rowSpan : 1
-    const val    = data[id]
-    const fmt    = getFormat ? getFormat(id) : {}
+    if (isSlave && isSlave(id)) return null
+    const merge = getMergeInfo && getMergeInfo(id)
+    const spanC = merge ? merge.colSpan : 1
+    const spanR = merge ? merge.rowSpan : 1
+    const val   = data[id]
+    const fmt   = getFormat ? getFormat(id) : {}
     const x = colX(c), y = rowY(r)
-
     let w = 0, h = 0
     for (let sc = 0; sc < spanC; sc++) w += cw(c + sc)
     for (let sr = 0; sr < spanR; sr++) h += rh(r + sr)
-
     const condFmt = getCondFormat ? getCondFormat(id, val ?? '') : null
+    return { id, val, fmt, condFmt, merge, x, y, w, h }
+  }
+
+  function _paintBgAt(r, c, data, getFormat, getMergeInfo, isSlave, getComment, getValidation, getCondFormat, getDiffFor) {
+    const g = _cellGeom(r, c, data, getFormat, getMergeInfo, isSlave, getCondFormat)
+    if (!g) return
+    const { id, fmt, condFmt, merge, x, y, w, h } = g
     _drawCellBackground(x, y, w, h, merge, fmt, condFmt)
-    // Data-bar from a `kind:'data-bar'` cond-format rule. Renders between
-    // the cell background and the text so values stay readable on top.
+    // Data-bar between background and text so values stay readable on top.
     if (condFmt?.dataBar) _drawDataBar(x, y, w, h, condFmt.dataBar)
     if (getDiffFor && getDiffFor(id)) _drawDiffOverlay(x, y, w, h)
+    if (getComment?.(id))    _drawCommentTriangle(x, y, w)
+    if (getValidation?.(id)) _drawDropdownArrow(x, y, w, h)
+    // Icon belongs in the bg pass — it's drawn before text and shifts the
+    // text rect right. The text pass computes the same inset to position
+    // text correctly without re-drawing the icon.
+    if (condFmt?.icon) _drawCellIcon(x, y, h, condFmt.icon)
+  }
 
-    if (getComment?.(id))     _drawCommentTriangle(x, y, w)
-    if (getValidation?.(id))  _drawDropdownArrow(x, y, w, h)
-
-    // Icon from a `kind:'icon-set'` cond-format rule. Drawn at the cell's
-    // left edge and shifts the text area right so they don't overlap.
-    const iconInset = condFmt?.icon ? _drawCellIcon(x, y, h, condFmt.icon) : 0
-
+  function _paintTextAt(r, c, data, getFormat, getMergeInfo, isSlave, getCondFormat, getRightInset) {
+    const g = _cellGeom(r, c, data, getFormat, getMergeInfo, isSlave, getCondFormat)
+    if (!g) return
+    const { id, val, fmt, condFmt, x, y, w, h } = g
     if (val == null || val === '') return
-
     const s = String(val)
     const baseFmt = condFmt ? { ...fmt, ...condFmt } : fmt
     const efmt = { ...baseFmt, align: baseFmt.align || _autoAlign(s) }
     const rightInset = getRightInset ? (getRightInset(id) || 0) : 0
+    const iconInset  = condFmt?.icon ? ICON_INSET : 0
     _setCellFont(efmt)
-    // Honour the icon's left-side reservation by shrinking the text rect.
     if (isWrapText(efmt)) _drawWrappedText(s, x + iconInset, y, w - iconInset, h, efmt, rightInset)
     else                  _drawCellText(x + iconInset, y, w - iconInset, h, s, efmt, rightInset)
   }
