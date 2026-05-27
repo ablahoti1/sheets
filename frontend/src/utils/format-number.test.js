@@ -193,6 +193,50 @@ describe('applyNumberFmt — date variants', () => {
   })
 })
 
+describe('applyNumberFmt — time variants', () => {
+  // 15:30:45 local — pick a fixed clock-only ms so all assertions stay in
+  // local timezone without ms-since-epoch arithmetic.
+  const d = new Date(2025, 0, 15, 15, 30, 45)
+  const ms = d.getTime()
+
+  it('time:hm → HH:MM (24h)', () => {
+    expect(applyNumberFmt(ms, 'time:hm')).toBe('15:30')
+  })
+
+  it('time:hms → HH:MM:SS (24h)', () => {
+    expect(applyNumberFmt(ms, 'time:hms')).toBe('15:30:45')
+  })
+
+  it('time:hm12 → H:MM AM/PM', () => {
+    expect(applyNumberFmt(ms, 'time:hm12')).toMatch(/^3:30 PM$/)
+  })
+
+  it('time:hms12 → H:MM:SS AM/PM', () => {
+    expect(applyNumberFmt(ms, 'time:hms12')).toMatch(/^3:30:45 PM$/)
+  })
+
+  it('non-numeric value passes through', () => {
+    expect(applyNumberFmt('hello', 'time:hm')).toBe('hello')
+  })
+})
+
+describe('applyNumberFmt — datetime', () => {
+  const d = new Date(2025, 0, 15, 15, 30, 0)
+  const ms = d.getTime()
+
+  it('datetime:dmy_hm12 → "DD/MM/YYYY, H:MM AM/PM"', () => {
+    expect(applyNumberFmt(ms, 'datetime:dmy_hm12')).toBe('15/01/2025, 3:30 PM')
+  })
+
+  it('datetime:ymd_hms → "YYYY-MM-DD, HH:MM:SS"', () => {
+    expect(applyNumberFmt(ms, 'datetime:ymd_hms')).toBe('2025-01-15, 15:30:00')
+  })
+
+  it('datetime:long_hm → "15 Jan 2025, 15:30"', () => {
+    expect(applyNumberFmt(ms, 'datetime:long_hm')).toBe('15 Jan 2025, 15:30')
+  })
+})
+
 describe('applyNumberFmt — number variants', () => {
   it('number:in groups as Indian lakhs', () => {
     expect(applyNumberFmt(1234567, 'number:in:0')).toBe('12,34,567')

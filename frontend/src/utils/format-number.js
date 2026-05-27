@@ -80,6 +80,20 @@ const DATE_FORMATTERS = {
   full: ['en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' }], // Mon, 15 Jan 2025
 }
 
+// Time variants. `12` suffix flips to 12-hour clock with AM/PM.
+const TIME_FORMATTERS = {
+  hm:    ['en-GB', { hour: '2-digit', minute: '2-digit', hour12: false }], // 15:30
+  hms:   ['en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }], // 15:30:45
+  hm12:  ['en-US', { hour: 'numeric', minute: '2-digit', hour12: true }],  // 3:30 PM
+  hms12: ['en-US', { hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true }],  // 3:30:45 PM
+}
+
+function _formatWith(map, variant, d) {
+  const cfg = map[variant]
+  if (!cfg) return null
+  return new Intl.DateTimeFormat(cfg[0], cfg[1]).format(d)
+}
+
 export function applyNumberFmt(value, format) {
   if (!format) return value
   const { type, variant, decimals } = parseNumberFmt(format)
@@ -105,8 +119,24 @@ export function applyNumberFmt(value, format) {
     const ms = parseFloat(value)
     if (isNaN(ms)) return value
     const d = new Date(ms)
-    const cfg = DATE_FORMATTERS[variant]
-    return cfg ? new Intl.DateTimeFormat(cfg[0], cfg[1]).format(d) : d.toLocaleDateString()
+    return _formatWith(DATE_FORMATTERS, variant, d) ?? d.toLocaleDateString()
+  }
+  if (type === 'time') {
+    const ms = parseFloat(value)
+    if (isNaN(ms)) return value
+    const d = new Date(ms)
+    return _formatWith(TIME_FORMATTERS, variant, d) ?? d.toLocaleTimeString()
+  }
+  if (type === 'datetime') {
+    const ms = parseFloat(value)
+    if (isNaN(ms)) return value
+    const d = new Date(ms)
+    // Combined variant is `<dateKey>_<timeKey>` (e.g. dmy_hm12). Falls back
+    // to the locale's default for either half if a token is missing/unknown.
+    const [dv, tv] = String(variant || '').split('_')
+    const datePart = _formatWith(DATE_FORMATTERS, dv, d) ?? d.toLocaleDateString()
+    const timePart = _formatWith(TIME_FORMATTERS, tv, d) ?? d.toLocaleTimeString()
+    return `${datePart}, ${timePart}`
   }
   return value
 }
