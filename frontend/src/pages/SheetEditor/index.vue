@@ -3410,6 +3410,11 @@ function toggleShowFormulas() {
 .sn-formula-input:focus { border-color:var(--outline-gray-4); background:var(--surface-white); box-shadow:0 0 0 2px rgba(23,23,23,.08); }
 .sn-fbar-actions  { display:flex; align-items:center; gap:6px; flex-shrink:0; margin-left:4px; }
 
+/* Frappe-ui's Dropdown menu (teleported to body) has no built-in max-height,
+   so long lists like the number-format picker overflow the viewport without
+   a scrollbar. Cap to ~60% of viewport and let overflow scroll. */
+.dropdown-content { max-height:min(60vh, 480px); overflow-y:auto; }
+
 /* Formula autocomplete — Frappe UI Autocomplete is form-field oriented, so the inline popover is bespoke but uses Espresso surfaces. */
 .sn-ac-list       { position:absolute; top:calc(100% + 4px); bottom:auto; left:0; right:0; background:var(--surface-modal); border:1px solid var(--outline-gray-2); border-radius:8px; box-shadow:0 0 1px rgba(0,0,0,.35), 0 6px 8px -4px rgba(0,0,0,.1); z-index:300; max-height:240px; overflow-y:auto; padding:4px; }
 .sn-ac-list--up   { top:auto; bottom:calc(100% + 4px); }
