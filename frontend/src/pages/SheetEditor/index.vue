@@ -167,7 +167,11 @@
         <div class="sn-vr" />
         <Button :variant="showSortFilter ? 'subtle' : 'ghost'"   size="sm" icon="filter"               tooltip="Toggle filter"              @click="showSortFilter = !showSortFilter" />
         <div class="sn-vr" />
-        <Button :variant="activeTextWrap === 'wrap' ? 'subtle' : 'ghost'" size="sm" icon="corner-down-left" tooltip="Wrap text" @click="toggleWrap" />
+        <Dropdown :options="textWrapDropdownOptions" placement="bottom">
+          <template #default="{ open }">
+            <Button :variant="open ? 'subtle' : 'ghost'" size="sm" :icon="textWrapIcon" tooltip="Text wrapping" />
+          </template>
+        </Dropdown>
         <div class="sn-vr" />
         <Button variant="ghost" size="sm" icon="lucide-blend"    tooltip="Conditional formatting"      @click="openCfDialog(null)" />
         <Button variant="ghost" size="sm" icon="lucide-link"     tooltip="Insert hyperlink (Ctrl+L)"   @click="openHyperlinkDialog" />
@@ -1493,27 +1497,36 @@ function repeatLast() {
 
 // Wrap text needs a row-height bump to actually be visible — toggleFmt alone
 // flips the format flag but the renderer's wrapped text gets clipped at the
-// fixed 24px row height. After turning wrap ON, auto-fit every row in the
-// selection (turning wrap OFF keeps the height — user may have grown the row
-// manually). Writes `textWrap: 'wrap' | 'overflow'` so the toggle is the
-// 2-mode subset of the full 3-mode (overflow / clip / wrap) enum.
-function toggleWrap() {
-  const next = activeTextWrap.value === 'wrap' ? 'overflow' : 'wrap'
-  // getTextWrap reads `textWrap` first, so a stale `wrapText: true` from a
-  // legacy cell doesn't override the new value — no need to also clear it.
-  formats.applyToRange(selectionIds(), { textWrap: next }, sheet.getCurrentSheet())
+// Writes `textWrap` (overflow | clip | wrap) for the selection. Auto-fits
+// every row to fit wrapped content when the user opts into wrap mode; the
+// other modes leave row heights alone (user may have grown rows manually).
+function setTextWrap(mode) {
+  formats.applyToRange(selectionIds(), { textWrap: mode }, sheet.getCurrentSheet())
   refreshActiveFormat()
   isDirty.value = true
-  if (next !== 'wrap' || !grid) {
-    recordAction?.('toggleWrap', [])
-    return
+  if (mode === 'wrap' && grid) {
+    const { r0, r1 } = grid.getSelection()
+    for (let r = r0; r <= r1; r++) grid.autoFitRow(r)
   }
-  const { r0, r1 } = grid.getSelection()
-  for (let r = r0; r <= r1; r++) grid.autoFitRow(r)
-  recordAction?.('toggleWrap', [])
+  recordAction?.('setTextWrap', [mode])
+}
+
+// Kept for the repeat-last shortcut handler (which dispatches by action
+// name); rebound to setTextWrap('wrap') / 'overflow' toggle.
+function toggleWrap() {
+  setTextWrap(activeTextWrap.value === 'wrap' ? 'overflow' : 'wrap')
 }
 
 const activeTextWrap = computed(() => getTextWrap(activeFormat.value))
+
+const TEXT_WRAP_ICON = { overflow: 'corner-down-right', clip: 'minimize', wrap: 'corner-down-left' }
+const textWrapIcon   = computed(() => TEXT_WRAP_ICON[activeTextWrap.value] || 'corner-down-left')
+
+const textWrapDropdownOptions = computed(() => [
+  { label: 'Overflow', icon: TEXT_WRAP_ICON.overflow, onClick: () => setTextWrap('overflow') },
+  { label: 'Clip',     icon: TEXT_WRAP_ICON.clip,     onClick: () => setTextWrap('clip')     },
+  { label: 'Wrap',     icon: TEXT_WRAP_ICON.wrap,     onClick: () => setTextWrap('wrap')     },
+])
 
 const { isSaving, saveError, loadSheet, autoCreate, saveExisting } =
   usePersistence({
