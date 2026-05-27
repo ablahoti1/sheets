@@ -392,10 +392,15 @@ export function createGrid(canvas, { onSelect, onCommit, onInput, onCancel, getF
     const a = colLabel(c0) + (r0 + 1)
     const range = (r0 === r1 && c0 === c1) ? a : a + ':' + colLabel(c1) + (r1 + 1)
     // Sheet prefix only when the pick is on a different sheet than the one
-    // the formula was started on. Quoted if the name has spaces or weirdness
-    // (matches the engine's tokenizer, which accepts both quoted and bare).
+    // the formula was started on. Quote any name that isn't a clean bare
+    // identifier (letters/digits/underscore, not starting with a digit) —
+    // dots, dashes, spaces, apostrophes all need wrapping per Excel rules.
+    // The engine tokenizer accepts both bare and quoted forms.
     if (!sheetName) return range
-    return /\s|[!]/.test(sheetName) ? `'${sheetName}'!${range}` : `${sheetName}!${range}`
+    const bareOk = /^[A-Za-z_][A-Za-z0-9_]*$/.test(sheetName)
+    if (bareOk) return `${sheetName}!${range}`
+    const escaped = sheetName.replace(/'/g, "''")
+    return `'${escaped}'!${range}`
   }
   // TODO(cross-sheet picker): wire a `getCurrentSheet` / `getEditingHomeSheet`
   // callback from the SheetEditor so the picker can detect cross-sheet picks

@@ -587,6 +587,36 @@ describe('cross-sheet references', () => {
   it('missing cross-sheet cell returns empty (coerced to 0)', () => {
     expect(evalExpr('=SUM(Sheet2!A1:A3)', { sheetCells: { Sheet2: {} } })).toBe(0)
   })
+
+  it('VLOOKUP across sheets (clean name)', () => {
+    expect(evalExpr('=VLOOKUP("k2",Sheet2!A1:B3,2,FALSE())', {
+      sheetCells: { Sheet2: { A1: 'k1', B1: 'v1', A2: 'k2', B2: 'v2', A3: 'k3', B3: 'v3' } },
+    })).toBe('v2')
+  })
+
+  it('VLOOKUP across sheets with quoted clean name', () => {
+    expect(evalExpr("=VLOOKUP(\"k2\",'Sheet2'!A1:B3,2,FALSE())", {
+      sheetCells: { Sheet2: { A1: 'k1', B1: 'v1', A2: 'k2', B2: 'v2' } },
+    })).toBe('v2')
+  })
+
+  it('reads a quoted sheet name containing a space', () => {
+    expect(evalExpr("=SUM('Sheet 2'!A1:A3)", {
+      sheetCells: { 'Sheet 2': { A1: 10, A2: 20, A3: 30 } },
+    })).toBe(60)
+  })
+
+  it('reads a quoted sheet name containing a dot', () => {
+    expect(evalExpr("=VLOOKUP(\"k2\",'My.Sheet'!A1:B2,2,FALSE())", {
+      sheetCells: { 'My.Sheet': { A1: 'k1', B1: 'v1', A2: 'k2', B2: 'v2' } },
+    })).toBe('v2')
+  })
+
+  it("handles an apostrophe inside a quoted sheet name ('' escape)", () => {
+    expect(evalExpr("=`O''Brien Co`!A1".replace(/`/g, "'"), {
+      sheetCells: { "O'Brien Co": { A1: 99 } },
+    })).toBe(99)
+  })
 })
 
 // ── Cell-ref resolution ────────────────────────────────────────────────────

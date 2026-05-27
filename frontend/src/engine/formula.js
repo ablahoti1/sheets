@@ -50,6 +50,32 @@ export function tokenize(src) {
 			out.push({ t: T.ERR, v: s }); continue
 		}
 
+		// Quoted sheet name — `'Sheet 2'!A1`, `'My.Sheet'!A1:B3`, etc. Excel
+		// convention: any sheet whose name contains a space, dot, dash or other
+		// non-alphanumeric char must be wrapped in apostrophes; a literal
+		// apostrophe is escaped by doubling it (`'O''Brien'`). Without this
+		// branch the tokenizer just choked on the leading `'`.
+		if (src[i] === "'") {
+			i++
+			let sheetName = ''
+			while (i < src.length) {
+				if (src[i] === "'") {
+					if (src[i + 1] === "'") { sheetName += "'"; i += 2; continue }  // escaped
+					i++; break
+				}
+				sheetName += src[i++]
+			}
+			if (src[i] !== '!') { out.push({ t: T.ERR, v: '#REF!' }); continue }
+			i++
+			let cell = ''
+			while (i < src.length && /[A-Za-z0-9]/.test(src[i])) cell += src[i++]
+			const cellUp = cell.toUpperCase()
+			if (/^[A-Z]+[0-9]+$/.test(cellUp))      out.push({ t: T.SHEETREF, sheet: sheetName, v: cellUp })
+			else if (/^[A-Z]+$/.test(cellUp))        out.push({ t: T.SHEETCOL, sheet: sheetName, v: cellUp })
+			else                                      out.push({ t: T.ERR, v: '#REF!' })
+			continue
+		}
+
 		if (/[A-Za-z_]/.test(src[i])) {
 			let s = ''
 			while (i < src.length && /[A-Za-z0-9_$ ]/.test(src[i])) {
