@@ -728,6 +728,23 @@ export function createGrid(canvas, { onSelect, onCommit, onInput, onCancel, getF
     return Math.hypot(x - fx, y - fy) <= 6
   }
 
+  // Double-click-fill extent: pick a non-empty neighbour column (left, then
+  // right) and walk its contiguous run starting at r1+1 — Google Sheets rule.
+  function _autoFillDownExtent(src) {
+    const hasVal = (r, c) => {
+      if (r < 0 || r >= TOTAL_ROWS || c < 0 || c >= TOTAL_COLS) return false
+      const v = data[cellId(r, c)]
+      return v != null && v !== ''
+    }
+    let anchor = null
+    if (hasVal(src.r1 + 1, src.c0 - 1))      anchor = src.c0 - 1
+    else if (hasVal(src.r1 + 1, src.c1 + 1)) anchor = src.c1 + 1
+    if (anchor === null) return src.r1
+    let r = src.r1 + 1
+    while (r < TOTAL_ROWS && hasVal(r, anchor)) r++
+    return r - 1
+  }
+
   // ── Auto-fit (double-click resize edge or header) ────────────────────────────
 
   // Measure with the same font the renderer uses, scoped to a fmt's bold/italic.
@@ -886,7 +903,10 @@ export function createGrid(canvas, { onSelect, onCommit, onInput, onCancel, getF
 
     if (hitTestFillHandle(e.clientX, e.clientY, rect)) {
       const { r0, c0, r1, c1 } = getSelRange()
-      filling = { r0, c0, r1, c1 }
+      // Track the mousedown screen position so mousemove can ignore sub-pixel
+      // jitter — otherwise a 1px wobble during the click extends the selection
+      // and turns a click (or the first half of a dblclick) into a stray fill.
+      filling = { r0, c0, r1, c1, startX: e.clientX, startY: e.clientY, moved: false }
       return
     }
 
@@ -973,6 +993,18 @@ export function createGrid(canvas, { onSelect, onCommit, onInput, onCancel, getF
   canvas.addEventListener('dblclick', e => {
     const rect = canvas.getBoundingClientRect()
 
+    // Double-click on the fill handle → fill down to the bottom of the
+    // adjacent column's contiguous data run (Google Sheets behaviour).
+    if (hitTestFillHandle(e.clientX, e.clientY, rect)) {
+      const src = getSelRange()
+      const end = _autoFillDownExtent(src)
+      if (end > src.r1) {
+        const total = { r0: src.r0, c0: src.c0, r1: end, c1: src.c1 }
+        onFill?.(src, total, { withModifier: e.metaKey || e.ctrlKey })
+      }
+      return
+    }
+
     // Double-click on the column resize edge or column header → auto-fit column width.
     const resizeCol = geo.hitTestColResize(e.clientX, e.clientY, rect)
     if (resizeCol !== null)        { autoFitCol(resizeCol); return }
@@ -1005,6 +1037,11 @@ export function createGrid(canvas, { onSelect, onCommit, onInput, onCancel, getF
     else                                           canvas.style.cursor = 'default'
 
     if (filling) {
+      if (!filling.moved) {
+        const dx = e.clientX - filling.startX, dy = e.clientY - filling.startY
+        if (Math.hypot(dx, dy) < 4) return
+        filling.moved = true
+      }
       const h = geo.hitTest(e.clientX, e.clientY, rect)
       if (h) extendSel(h.r, h.c)
       return
