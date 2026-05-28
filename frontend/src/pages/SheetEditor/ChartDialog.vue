@@ -440,14 +440,21 @@ function _colLetter(idx) {
   font-size: 13px; color: var(--ink-gray-8); cursor: pointer;
 }
 .cd-series-row:hover { background: var(--surface-gray-2); }
+/* Sticky master "Select / Deselect" row. The list scrolls under it, so the
+   background must be fully opaque and the z-index high enough to keep
+   subsequent rows behind. `top: -6px` cancels the negative margin so the
+   row stays flush with the list's rounded top corner. A soft drop shadow
+   doubles the visual separation so a scrolled-in row never appears to peek
+   between the master's border and the first option below it. */
 .cd-series-row--master {
-  position: sticky; top: 0;
-  background: var(--surface-white);
+  position: sticky; top: -6px;
+  background: var(--surface-modal, #fff);
   border-bottom: 1px solid var(--outline-gray-2);
+  box-shadow: 0 2px 4px -2px rgba(0, 0, 0, .08);
   margin: -6px -6px 4px;
   padding: 8px 12px;
   border-top-left-radius: 8px; border-top-right-radius: 8px;
-  z-index: 1;
+  z-index: 2;
 }
 .cd-series-row--master strong { color: var(--ink-gray-7); font-weight: 500; }
 .cd-series-row--master:hover { background: var(--surface-gray-1); }
