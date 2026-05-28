@@ -88,10 +88,49 @@ const TIME_FORMATTERS = {
   hms12: ['en-US', { hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true }],  // 3:30:45 PM
 }
 
+// Intl formatters are *expensive* to construct (~1 ms each on V8) and a
+// sheet typically uses only a handful of unique format configurations
+// across thousands of cells. Cache instances by a string key so we build
+// each formatter once and reuse it on every cell.
+const _intlCache = new Map()
+
+function _numFmt(locale, decimals) {
+  const key = `n|${locale ?? '_'}|${decimals ?? '_'}`
+  let f = _intlCache.get(key)
+  if (!f) {
+    const opts = decimals == null ? undefined : { minimumFractionDigits: decimals, maximumFractionDigits: decimals }
+    f = new Intl.NumberFormat(locale, opts)
+    _intlCache.set(key, f)
+  }
+  return f
+}
+
+function _curFmt(locale, currency, decimals) {
+  const key = `c|${locale}|${currency}|${decimals}`
+  let f = _intlCache.get(key)
+  if (!f) {
+    f = new Intl.NumberFormat(locale, { style: 'currency', currency, minimumFractionDigits: decimals, maximumFractionDigits: decimals })
+    _intlCache.set(key, f)
+  }
+  return f
+}
+
+function _dtFmt(locale, opts) {
+  // Options are small objects with a stable key set — JSON.stringify is fine
+  // (and the cost is paid once per unique format string).
+  const key = `d|${locale}|${JSON.stringify(opts)}`
+  let f = _intlCache.get(key)
+  if (!f) {
+    f = new Intl.DateTimeFormat(locale, opts)
+    _intlCache.set(key, f)
+  }
+  return f
+}
+
 function _formatWith(map, variant, d) {
   const cfg = map[variant]
   if (!cfg) return null
-  return new Intl.DateTimeFormat(cfg[0], cfg[1]).format(d)
+  return _dtFmt(cfg[0], cfg[1]).format(d)
 }
 
 export function applyNumberFmt(value, format) {
@@ -105,14 +144,13 @@ export function applyNumberFmt(value, format) {
   if (isNaN(n) && type !== 'date') return value
   if (type === 'number') {
     const loc = NUMBER_LOCALES[variant] !== undefined ? NUMBER_LOCALES[variant] : undefined
-    const opts = decimals == null ? {} : { minimumFractionDigits: decimals, maximumFractionDigits: decimals }
-    return n.toLocaleString(loc, opts)
+    return _numFmt(loc, decimals).format(n)
   }
   if (type === 'currency') {
     const code = CURRENCIES[variant] ? variant : 'USD'
     const cfg  = CURRENCIES[code]
     const d    = decimals ?? cfg.defaultDecimals
-    return new Intl.NumberFormat(cfg.locale, { style: 'currency', currency: code, minimumFractionDigits: d, maximumFractionDigits: d }).format(n)
+    return _curFmt(cfg.locale, code, d).format(n)
   }
   if (type === 'percentage') return (n * 100).toFixed(decimals ?? 2) + '%'
   if (type === 'date') {

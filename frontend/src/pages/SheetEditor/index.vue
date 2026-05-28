@@ -3431,19 +3431,42 @@ function markEdited() {
 function _repopulateGrid() {
   if (!grid) return
   grid.clearAll()
-  const data = sheet.getRawData()
+  const data    = sheet.getRawData()
+  const sheetSn = sheet.getCurrentSheet()
+  const show    = showFormulas.value
+  // Hot path on load for big sheets — 25k cells × parseCellId (regex match +
+  // {row,col} object allocation per call) was eating ~250 ms of GC + script
+  // time. Skip the regex entirely: walk the id's characters by char code to
+  // track maxCol/maxRow without allocating. The grid only needs the bounds
+  // to know whether to expand its default 26 × 1000 rectangle.
   let maxCol = 0, maxRow = 0
   for (const id of Object.keys(data)) {
-    const p = parseCellId(id)
-    if (p) {
-      if (p.col > maxCol) maxCol = p.col
-      if (p.row > maxRow) maxRow = p.row
+    // Inline cellId parse — letters → col index, then digits → row number.
+    // No regex, no result object.
+    let col = 0, row = 0, i = 0
+    const len = id.length
+    while (i < len) {
+      const c = id.charCodeAt(i)
+      if (c < 65 || c > 90) break
+      col = col * 26 + (c - 64)
+      i++
     }
-    if (showFormulas.value) {
+    while (i < len) {
+      const c = id.charCodeAt(i)
+      if (c < 48 || c > 57) { row = 0; break }
+      row = row * 10 + (c - 48)
+      i++
+    }
+    if (col > 0 && row > 0) {
+      if (col - 1 > maxCol) maxCol = col - 1
+      if (row - 1 > maxRow) maxRow = row - 1
+    }
+
+    if (show) {
       grid.setCell(id, String(data[id] ?? ''))
       continue
     }
-    const fmt = formats.get(id, sheet.getCurrentSheet())
+    const fmt = formats.get(id, sheetSn)
     const displayValue = sheet.getDisplayValue(id)
     grid.setCell(id, fmt.numberFormat ? applyNumberFmt(displayValue, fmt.numberFormat) : displayValue)
   }
