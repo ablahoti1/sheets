@@ -1037,14 +1037,26 @@ const history = createHistory({
 })
 
 // Used by op-based undo/redo to write a {cellId: value} diff back to the
-// engine. Walks every cell through sheet.setCell so deps, memo, the canvas
-// notify cascade, and the Y.Doc mirror all update — the visible result is
-// identical to the user typing those values themselves.
+// engine. Routes through the engine's bulk write so a big op (delete-all,
+// 25k-cell paste) doesn't freeze the main thread the same way the import
+// hot loop used to. For small ops the per-cell setCell path is still
+// fine and keeps the collab Y.Doc mirror in sync; the batch path is only
+// taken when the op is large enough that the per-cell cascade would be
+// the bottleneck.
+//
+// Threshold is conservative — 25 cells is well below the point where
+// per-cell setCell starts to feel slow, but above any typical single-cell
+// edit so collab sync stays exact for normal undo/redo.
+const _BATCH_THRESHOLD = 25
 function _applyCellMap(map, sheetName) {
   if (!map) return
-  for (const [id, val] of Object.entries(map)) {
-    sheet.setCell(id, val ?? '', sheetName)
+  const ids = Object.keys(map)
+  if (ids.length === 0) return
+  if (ids.length > _BATCH_THRESHOLD && sheet.batchSetCells) {
+    sheet.batchSetCells(map, sheetName, { replace: false })
+    return
   }
+  for (const id of ids) sheet.setCell(id, map[id] ?? '', sheetName)
 }
 
 // Forward-declaration: `useCollaboration` (further down the script) sets
