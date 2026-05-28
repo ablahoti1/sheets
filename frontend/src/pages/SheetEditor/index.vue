@@ -1374,18 +1374,42 @@ function selectionIds() {
 
 // ── Selection stats ───────────────────────────────────────────────────────────
 
+// Count / Sum / Avg in the status bar. Called from onSelect on every
+// selection change (arrow nav, click, drag-extend, Enter advancing), so
+// it has to be cheap.
+//
+// Old impl walked Object.entries(sheet.getRawData()) — every cell in the
+// whole sheet — and parseCellId-tested each one against the rect. On a
+// 5k-row sheet that was ~25k cells × regex match per call, fires twice
+// per keyup (once from onSelect, once from the keyup listener), so each
+// arrow press paid ~50k cell scans. The perf trace pinned this at 886 ms
+// in onSelect.
+//
+// New impl iterates the *selection rect* directly via sheet.getCell. For
+// a 5×5 selection that's 25 reads instead of 25k. Worst case is Ctrl+A
+// (whole sheet) which is the same as before. RAF-coalesced so a drag-
+// extend that fires onSelect 1000× still computes stats once per frame.
+let _statsRAF = null
 function computeSelectionStats() {
+  if (_statsRAF) return
+  _statsRAF = requestAnimationFrame(() => {
+    _statsRAF = null
+    _computeSelectionStatsNow()
+  })
+}
+function _computeSelectionStatsNow() {
   if (!grid) return
   const { r0, c0, r1, c1 } = grid.getSelection()
   if ((r1 - r0 + 1) * (c1 - c0 + 1) <= 1) { selectionStats.value = null; return }
-
+  const sn = sheet.getCurrentSheet()
   let count = 0, numCount = 0, sum = 0
-  for (const [id, val] of Object.entries(sheet.getRawData())) {
-    const p = parseCellId(id)
-    if (!p || p.row < r0 || p.row > r1 || p.col < c0 || p.col > c1) continue
-    if (val !== '' && val != null) count++
-    const n = parseFloat(val)
-    if (!isNaN(n)) { numCount++; sum += n }
+  for (let r = r0; r <= r1; r++) {
+    for (let c = c0; c <= c1; c++) {
+      const val = sheet.getCell(cellId(r, c), sn)
+      if (val !== '' && val != null) count++
+      const n = parseFloat(val)
+      if (!isNaN(n)) { numCount++; sum += n }
+    }
   }
   selectionStats.value = (count === 0 && numCount === 0) ? null : {
     count,
@@ -2107,8 +2131,10 @@ function _setupGridInstance() {
 
 function _setupEventListeners() {
   canvasRef.value.addEventListener('contextmenu', onCanvasContextMenu)
-  canvasRef.value.addEventListener('mouseup', computeSelectionStats)
-  canvasRef.value.addEventListener('keyup',   computeSelectionStats)
+  // computeSelectionStats fires from the grid's onSelect callback on every
+  // selection change (moveSel + extendSel both emit it). The redundant
+  // mouseup/keyup listeners that used to live here doubled the per-event
+  // cost — each keypress walked the cell scan twice. Drop them.
   ro = new ResizeObserver(([entry]) => {
     const { width, height } = entry.contentRect
     grid.resize(width, height)
