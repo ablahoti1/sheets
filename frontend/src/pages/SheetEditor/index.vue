@@ -52,13 +52,18 @@
         <input ref="csvInputRef"  name="csv-import"  type="file" accept=".csv"                   style="display:none" @change="importCSV" />
         <input ref="xlsxInputRef" name="xlsx-import" type="file" accept=".xlsx,.xls,.xlsm,.ods"  style="display:none" @change="importXLSX" />
         <span class="sn-topbar-divider" aria-hidden="true" />
-        <Button variant="ghost" size="sm" icon="lucide-message-square" tooltip="Insert/edit note (Shift+F2)" @click="openCommentPanel" />
+        <!-- Notes: button toggles the side panel listing all notes across sheets.
+             Shift+F2 still opens the per-cell inline editor for quick capture. -->
+        <Button :variant="notesPanel.open ? 'subtle' : 'ghost'"
+                size="sm" icon="lucide-message-square"
+                :tooltip="`Notes${allNotes.length ? ` (${allNotes.length})` : ''} — Shift+F2 to add`"
+                @click="toggleNotesPanel" />
         <!-- Variant flips to "subtle" while the panel is open so the trigger
              reads as toggled, matching Frappe UI's standard toggle pattern. -->
         <Button :variant="vhOpen ? 'subtle' : 'ghost'"
                 size="sm" icon="clock"
                 tooltip="Version history"
-                @click="vhOpen ? closeVersionHistory() : openVersionHistory()" />
+                @click="vhOpen ? closeVersionHistory() : (notesPanel.open = false, openVersionHistory())" />
         <Button variant="ghost" size="sm" icon="help-circle" tooltip="Keyboard shortcuts (?)" @click="showShortcutsHelp = true" />
         <span class="sn-topbar-divider" aria-hidden="true" />
         <!-- Presence avatars — other users currently viewing this sheet -->
@@ -290,6 +295,41 @@
         @copy="makeACopyInline"
         @restore="restoreVersionInline"
       />
+
+      <!-- Notes side panel — Google-Sheets-style global list. Lives inside
+           sn-grid-wrap so it docks the same right edge as Version History. -->
+      <aside v-if="notesPanel.open" class="sn-notes-panel" @click.stop>
+        <header class="sn-notes-header">
+          <div class="sn-notes-title">
+            Notes
+            <span v-if="allNotes.length" class="sn-notes-count">· {{ allNotes.length }}</span>
+          </div>
+          <Button variant="ghost" size="sm" icon="x" @click="notesPanel.open = false" />
+        </header>
+        <div class="sn-notes-toolbar">
+          <Button size="sm" variant="subtle" iconLeft="plus"
+                  :label="`Add note to ${activeCell}`" @click="addNoteFromPanel" />
+        </div>
+        <div v-if="!allNotes.length" class="sn-notes-empty">
+          <div class="sn-notes-empty-title">No notes yet.</div>
+          <div class="sn-notes-empty-hint">
+            Select a cell and press <KeyboardShortcut combo="Shift+F2" />, or use
+            the button above. Notes appear here once added.
+          </div>
+        </div>
+        <div v-else class="sn-notes-list">
+          <div v-for="g in notesGrouped" :key="g.sheet" class="sn-notes-group">
+            <div class="sn-notes-group-h">{{ g.sheet }}</div>
+            <div v-for="n in g.items" :key="g.sheet + ':' + n.id"
+                 class="sn-notes-row"
+                 :class="{ 'sn-notes-row-active': n.sheet === currentSheet && n.id === activeCell }"
+                 @click="jumpToNote(n)">
+              <div class="sn-notes-row-ref">{{ n.id }}</div>
+              <div class="sn-notes-row-text">{{ n.text }}</div>
+            </div>
+          </div>
+        </div>
+      </aside>
 
       <CellHistoryPopover
         v-model="cellHistory.open"
@@ -1232,6 +1272,11 @@ const isPaintingFormat  = ref(false)
 
 // ── Comment UI state ──────────────────────────────────────────────────────────
 const commentPanel  = reactive({ open: false, id: '', text: '', x: 0, y: 0 })
+
+// Notes side panel — global list of notes across all sheets, click-to-jump.
+// `rev` is bumped whenever a note is saved/deleted so the computed list
+// re-runs (the comments engine is plain state, not reactive).
+const notesPanel = reactive({ open: false, rev: 0 })
 
 // ── Dropdown (validation) UI state ────────────────────────────────────────────
 const dropdownPanel    = reactive({ open: false, id: '', options: [], x: 0, y: 0, w: 120 })
@@ -2790,17 +2835,37 @@ function onNumberFormatChange(value) {
 function openCommentPanel() {
   if (!grid) return
   const id   = activeCell.value
-  const rect = canvasRef.value?.getBoundingClientRect() || { left: 100, top: 100 }
+  const p    = parseCellId(id)
+  const cv   = canvasRef.value?.getBoundingClientRect()
+  // Cell rect is canvas-local CSS coords (zoom already applied). The panel
+  // is position:fixed so we add the canvas's viewport offset. Prefer placing
+  // it just to the right of the cell so the cell stays visible while typing;
+  // flip left/up if it would overflow the viewport.
+  const cell = p && grid.getCellRect ? grid.getCellRect(p.row, p.col) : null
+  const PANEL_W = 260, PANEL_H = 200, GAP = 6
+  let x, y
+  if (cv && cell) {
+    x = cv.left + cell.x + cell.width + GAP
+    y = cv.top  + cell.y
+    if (x + PANEL_W > window.innerWidth)  x = cv.left + cell.x - PANEL_W - GAP
+    if (x < 4) x = 4
+    if (y + PANEL_H > window.innerHeight) y = Math.max(4, window.innerHeight - PANEL_H - 4)
+  } else {
+    const rect = cv || { left: 100, top: 100 }
+    x = rect.left + 60
+    y = rect.top  + 40
+  }
   commentPanel.id   = id
   commentPanel.text = comments.get(id, sheet.getCurrentSheet()) || ''
-  commentPanel.x    = rect.left + 60
-  commentPanel.y    = rect.top  + 40
+  commentPanel.x    = x
+  commentPanel.y    = y
   commentPanel.open = true
 }
 
 function saveComment() {
   comments.set(commentPanel.id, commentPanel.text, sheet.getCurrentSheet())
   commentPanel.open = false
+  notesPanel.rev++
   grid?.render()
   isDirty.value = true
 }
@@ -2808,8 +2873,73 @@ function saveComment() {
 function deleteComment() {
   comments.clear(commentPanel.id, sheet.getCurrentSheet())
   commentPanel.open = false
+  notesPanel.rev++
   grid?.render()
   isDirty.value = true
+}
+
+// ── Notes side panel ──────────────────────────────────────────────────────────
+
+// All notes across all sheets, ordered: current sheet first, then by row/col.
+// Re-runs when notesPanel.rev bumps (after save/delete) — the comments engine
+// itself isn't reactive.
+const allNotes = computed(() => {
+  notesPanel.rev   // dep for re-run
+  const cur  = sheet.getCurrentSheet()
+  const list = []
+  for (const name of sheetNames.value) {
+    const map = comments.getAll(name) || {}
+    const entries = Object.entries(map)
+      .map(([id, text]) => ({ id, p: parseCellId(id), text }))
+      .filter(e => e.p)
+      .sort((a, b) => a.p.row - b.p.row || a.p.col - b.p.col)
+      .map(e => ({ sheet: name, id: e.id, text: e.text }))
+    list.push(...entries)
+  }
+  list.sort((a, b) => {
+    if (a.sheet === cur && b.sheet !== cur) return -1
+    if (b.sheet === cur && a.sheet !== cur) return 1
+    return a.sheet.localeCompare(b.sheet)
+  })
+  return list
+})
+
+const notesGrouped = computed(() => {
+  const out = []
+  let cur = null
+  for (const n of allNotes.value) {
+    if (!cur || cur.sheet !== n.sheet) {
+      cur = { sheet: n.sheet, items: [] }
+      out.push(cur)
+    }
+    cur.items.push(n)
+  }
+  return out
+})
+
+function toggleNotesPanel() {
+  if (notesPanel.open) { notesPanel.open = false; return }
+  // Notes and version history dock the same right edge — keep one open at a time.
+  if (vhOpen.value) closeVersionHistory()
+  notesPanel.rev++  // force-refresh on open
+  notesPanel.open = true
+}
+
+function jumpToNote(n) {
+  if (!grid) return
+  const p = parseCellId(n.id)
+  if (!p) return
+  if (n.sheet !== sheet.getCurrentSheet()) switchSheet(n.sheet)
+  nextTick(() => {
+    grid.moveTo(p.row, p.col)
+    activeCell.value = n.id
+    openCommentPanel()
+  })
+}
+
+function addNoteFromPanel() {
+  // Convenience: same as topbar note button, but invoked from inside the panel.
+  openCommentPanel()
 }
 
 // ── Data validation ───────────────────────────────────────────────────────────
@@ -4057,6 +4187,26 @@ function toggleShowFormulas() {
 .sn-comment-ta     { resize:vertical; font-family:inherit; font-size:13px; color:var(--ink-gray-9); background:var(--surface-gray-1); border:1px solid var(--outline-gray-2); border-radius:6px; padding:6px 8px; min-height:64px; outline:none; }
 .sn-comment-ta:focus { border-color:var(--outline-gray-4); }
 .sn-comment-actions { display:flex; gap:6px; justify-content:flex-end; }
+
+/* Notes side panel — docks the right edge of sn-grid-wrap, same dock as
+   Version History (only one of the two is open at a time). */
+.sn-notes-panel       { position:absolute; top:0; right:0; bottom:0; width:300px; background:var(--surface-white); border-left:1px solid var(--outline-gray-2); display:flex; flex-direction:column; z-index:30; box-shadow:-4px 0 12px -8px rgba(0,0,0,.08); animation:sn-notes-slide-in 160ms cubic-bezier(.2,.8,.25,1); }
+@keyframes sn-notes-slide-in { from { transform:translateX(16px); opacity:0; } to { transform:translateX(0); opacity:1; } }
+.sn-notes-header      { display:flex; align-items:center; justify-content:space-between; padding:10px 12px; border-bottom:1px solid var(--outline-gray-2); }
+.sn-notes-title       { font-weight:600; color:var(--ink-gray-8); font-size:13px; display:flex; align-items:center; gap:6px; }
+.sn-notes-count       { font-weight:400; color:var(--ink-gray-5); font-size:12px; }
+.sn-notes-toolbar     { padding:8px 12px; border-bottom:1px solid var(--outline-gray-2); }
+.sn-notes-empty       { padding:24px 16px; text-align:center; color:var(--ink-gray-5); }
+.sn-notes-empty-title { font-size:13px; font-weight:500; color:var(--ink-gray-7); margin-bottom:6px; }
+.sn-notes-empty-hint  { font-size:12px; line-height:1.5; }
+.sn-notes-list        { flex:1; overflow-y:auto; padding:4px 0 12px; }
+.sn-notes-group       { padding:4px 0; }
+.sn-notes-group-h     { font-size:11px; font-weight:500; letter-spacing:.02em; color:var(--ink-gray-5); padding:8px 16px 4px; text-transform:uppercase; }
+.sn-notes-row         { padding:8px 12px; margin:1px 6px; border-radius:6px; cursor:pointer; transition:background-color .12s; }
+.sn-notes-row:hover   { background:var(--surface-gray-2); }
+.sn-notes-row-active  { background:var(--surface-gray-2); box-shadow:inset 2px 0 0 var(--ink-gray-7); }
+.sn-notes-row-ref     { font-size:12px; font-weight:600; color:var(--ink-gray-8); font-variant-numeric:tabular-nums; }
+.sn-notes-row-text    { font-size:12px; color:var(--ink-gray-6); margin-top:2px; line-height:1.4; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; word-break:break-word; }
 
 /* Validation dropdown panel */
 .sn-dropdown-panel { position:fixed; z-index:8500; background:var(--surface-modal); border:1px solid var(--outline-gray-modals); border-radius:8px; box-shadow:0 4px 12px rgba(0,0,0,.12); min-width:120px; max-height:200px; overflow-y:auto; }
