@@ -1441,8 +1441,14 @@ const titleInputWidth = computed(() => {
 })
 
 
-const userEmail   = window.frappe?.session?.user || ''
-const userInitial = computed(() => (userEmail ? userEmail[0] : 'U').toUpperCase())
+// window.frappe.session is hydrated by Frappe's boot script which may not
+// have finished when this module evaluates (especially on portal routes /
+// post-login redirects on Frappe Cloud). Read it lazily into a ref and
+// refresh on mount so the avatar reflects the actual logged-in user
+// instead of the "U" fallback.
+const userEmail   = ref(window.frappe?.session?.user || '')
+const userInitial = computed(() => (userEmail.value ? userEmail.value[0] : 'U').toUpperCase())
+onMounted(() => { userEmail.value = window.frappe?.session?.user || userEmail.value })
 
 // Collaboration — presence + sharing
 const shareOpen   = ref(false)
