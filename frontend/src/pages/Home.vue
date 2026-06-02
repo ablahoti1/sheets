@@ -138,34 +138,41 @@
         </div>
       </div>
 
-      <!-- Sheet list -->
-      <div v-else class="home-list">
-        <div class="home-list-head">
-          <div class="home-list-col home-list-col--title">Name</div>
-          <div class="home-list-col home-list-col--owner">Owner</div>
-          <div class="home-list-col home-list-col--date">Last modified</div>
-          <div class="home-list-col home-list-col--actions" aria-hidden="true"></div>
-        </div>
-        <div
-          v-for="sheet in filteredSheets"
-          :key="sheet.name"
-          class="home-list-row"
-          @click="emit('open', sheet.name)"
+      <!-- Sheet list — Frappe UI ListView wrapped in a bordered card so the
+           table reads as a single contained block (matches the design ref). -->
+      <div v-else class="home-list-wrap">
+        <ListView
+          :columns="listColumns"
+          :rows="filteredSheets"
+          row-key="name"
+          :options="listOptions"
         >
-          <div class="home-list-col home-list-col--title">
-            <FeatherIcon name="file-text" class="home-list-icon" />
-            <span class="home-list-title">{{ sheet.title }}</span>
-          </div>
-          <div class="home-list-col home-list-col--owner">{{ shortOwner(sheet.owner) }}</div>
-          <div class="home-list-col home-list-col--date">{{ formatDate(sheet.modified) }}</div>
-          <div class="home-list-col home-list-col--actions" @click.stop>
-            <Dropdown :options="cardActions(sheet)" placement="right">
-              <template #default="{ open }">
-                <Button :variant="open ? 'subtle' : 'ghost'" size="sm" icon="more-vertical" tooltip="Actions" />
-              </template>
-            </Dropdown>
-          </div>
-        </div>
+          <template #cell="{ item, row, column }">
+            <div
+              v-if="column.key === '_actions'"
+              class="flex w-full justify-end"
+              @click.stop
+            >
+              <Dropdown :options="cardActions(row)" placement="right">
+                <template #default="{ open }">
+                  <Button
+                    :variant="open ? 'subtle' : 'ghost'"
+                    size="sm"
+                    icon="more-vertical"
+                    tooltip="Actions"
+                  />
+                </template>
+              </Dropdown>
+            </div>
+            <ListRowItem
+              v-else
+              :column="column"
+              :row="row"
+              :item="item"
+              :align="column.align"
+            />
+          </template>
+        </ListView>
       </div>
     </div>
 
@@ -204,8 +211,18 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
-import { Badge, Button, Dialog, Spinner, FormControl, FeatherIcon, Dropdown } from 'frappe-ui'
+import { ref, computed, h, onMounted } from 'vue'
+import {
+  Badge,
+  Button,
+  Dialog,
+  Spinner,
+  FormControl,
+  FeatherIcon,
+  Dropdown,
+  ListView,
+  ListRowItem,
+} from 'frappe-ui'
 import { call } from '../utils/api.js'
 
 const emit = defineEmits(['open', 'new'])
@@ -250,6 +267,42 @@ function shortOwner(u) {
   if (!u) return ''
   if (u === currentUser) return 'me'
   return u.includes('@') ? u.split('@')[0] : u
+}
+
+// Frappe UI ListView column definitions. Trailing `_actions` column holds the
+// 3-dot menu — rendered via the #cell slot since ListRowItem can't host a
+// Dropdown trigger directly.
+const listColumns = [
+  {
+    label: 'Name',
+    key: 'title',
+    width: 3,
+    prefix: () =>
+      h(FeatherIcon, {
+        name: 'file-text',
+        class: 'h-4 w-4 text-ink-gray-5 shrink-0',
+      }),
+  },
+  {
+    label: 'Owner',
+    key: 'owner',
+    width: 1,
+    getLabel: ({ row }) => shortOwner(row.owner),
+  },
+  {
+    label: 'Last Modified',
+    key: 'modified',
+    width: 1,
+    getLabel: ({ row }) => formatDate(row.modified),
+  },
+  { label: '', key: '_actions', width: '60px', align: 'right' },
+]
+
+const listOptions = {
+  selectable: false,
+  showTooltip: true,
+  rowHeight: 52,
+  onRowClick: (row) => emit('open', row.name),
 }
 
 // Filter by title, case-insensitive substring match. Sort order from the API
@@ -528,70 +581,16 @@ async function duplicate(sheet) {
 }
 
 /* ── List view ─────────────────────────────────────────────────────────────
-   Dense table-like rendering. Four-column grid mirrors the header row so the
-   columns line up without table semantics (we want row-level click + the
-   trailing actions menu to live in a flex child, not a `<td>`). */
-.home-list {
+   Frappe UI's ListView renders the header + rows with its own classes; we
+   just wrap it in a bordered card so the table reads as a single contained
+   block (matching the Google Sheets / Drive style reference). The inner
+   `padding: 0 8px` cancels ListHeader's `mb-2` so the header sits flush
+   with the card's top edge. */
+.home-list-wrap {
   background: var(--surface-white);
   border: 1px solid var(--outline-gray-2);
   border-radius: 10px;
   overflow: hidden;
-}
-.home-list-head,
-.home-list-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 160px 160px 48px;
-  align-items: center;
-  gap: 16px;
-  padding: 10px 16px;
-}
-.home-list-head {
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: .04em;
-  color: var(--ink-gray-5);
-  border-bottom: 1px solid var(--outline-gray-2);
-  background: var(--surface-gray-1);
-}
-.home-list-row {
-  cursor: pointer;
-  border-bottom: 1px solid var(--outline-gray-2);
-  transition: background-color .1s;
-}
-.home-list-row:last-child { border-bottom: 0; }
-.home-list-row:hover      { background: var(--surface-gray-2); }
-.home-list-col            { min-width: 0; }
-.home-list-col--title {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--ink-gray-9);
-  overflow: hidden;
-}
-.home-list-icon {
-  width: 14px;
-  height: 14px;
-  color: var(--ink-gray-5);
-  flex-shrink: 0;
-}
-.home-list-title {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.home-list-col--owner,
-.home-list-col--date {
-  font-size: 12px;
-  color: var(--ink-gray-6);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.home-list-col--actions {
-  display: flex;
-  justify-content: flex-end;
+  padding: 8px;
 }
 </style>
