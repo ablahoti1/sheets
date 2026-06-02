@@ -20,7 +20,7 @@
           <circle cx="136" cy="164" r="11" fill="white"/>
           <circle cx="184" cy="80"  r="11" fill="white"/>
         </svg>
-        <span class="home-brand-name">Frappe Spreadsheet</span>
+        <span class="home-brand-name">Frappe Sheets</span>
       </div>
       <!-- Inline error banner — destructive actions (delete / duplicate)
            use this instead of `window.alert` so the chrome stays in-app

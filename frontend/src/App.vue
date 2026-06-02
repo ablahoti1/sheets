@@ -20,7 +20,7 @@
         <circle cx="184" cy="80"  r="11" fill="white"/>
       </svg>
       <h2>Open on desktop</h2>
-      <p>Frappe Spreadsheet is built for desktop browsers — mobile and tablet
+      <p>Frappe Sheets is built for desktop browsers — mobile and tablet
          support is on the roadmap. Please come back from a laptop or PC.</p>
     </div>
   </div>
