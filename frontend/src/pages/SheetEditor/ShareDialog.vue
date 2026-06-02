@@ -109,7 +109,9 @@
     </template>
 
     <template #actions>
-      <Button variant="outline" size="sm" icon="link-2" label="Copy link" @click="copyLink" />
+      <div class="flex flex-row-reverse gap-2">
+        <Button variant="outline" size="sm" icon="link-2" label="Copy link" @click="copyLink" />
+      </div>
     </template>
   </Dialog>
 </template>

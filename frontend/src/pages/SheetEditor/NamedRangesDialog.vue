@@ -65,7 +65,9 @@
     </template>
 
     <template #actions>
-      <Button @click="show = false">Done</Button>
+      <div class="flex flex-row-reverse gap-2">
+        <Button variant="solid" @click="show = false">Done</Button>
+      </div>
     </template>
   </Dialog>
 </template>

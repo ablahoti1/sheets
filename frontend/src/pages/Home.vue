@@ -182,8 +182,10 @@
         <FormControl v-model="renameValue" label="New title" placeholder="Untitled Spreadsheet" @keydown.enter="confirmRename" />
       </template>
       <template #actions>
-        <Button variant="solid" :loading="renaming" @click="confirmRename">Rename</Button>
-        <Button @click="showRenameDialog = false">Cancel</Button>
+        <div class="flex flex-row-reverse gap-2">
+          <Button variant="solid" :loading="renaming" @click="confirmRename">Rename</Button>
+          <Button @click="showRenameDialog = false">Cancel</Button>
+        </div>
       </template>
     </Dialog>
 
@@ -198,13 +200,15 @@
         </p>
       </template>
       <template #actions>
-        <Button
-          variant="solid"
-          theme="red"
-          :loading="deleting"
-          @click="doDelete"
-        >Delete</Button>
-        <Button @click="showDeleteDialog = false">Cancel</Button>
+        <div class="flex flex-row-reverse gap-2">
+          <Button
+            variant="solid"
+            theme="red"
+            :loading="deleting"
+            @click="doDelete"
+          >Delete</Button>
+          <Button @click="showDeleteDialog = false">Cancel</Button>
+        </div>
       </template>
     </Dialog>
   </div>

@@ -132,13 +132,15 @@
     </template>
 
     <template #actions>
-      <Button @click="show = false">Cancel</Button>
-      <Button
-        variant="solid"
-        :disabled="!canCommit"
-        :label="chartId ? 'Update chart' : 'Insert chart'"
-        @click="onConfirm"
-      />
+      <div class="flex flex-row-reverse gap-2">
+        <Button
+          variant="solid"
+          :disabled="!canCommit"
+          :label="chartId ? 'Update chart' : 'Insert chart'"
+          @click="onConfirm"
+        />
+        <Button @click="show = false">Cancel</Button>
+      </div>
     </template>
   </Dialog>
 </template>

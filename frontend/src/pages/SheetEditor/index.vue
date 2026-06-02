@@ -493,8 +493,10 @@
         <p v-if="renameError" class="sn-rename-err">{{ renameError }}</p>
       </template>
       <template #actions>
-        <Button variant="solid" @click="confirmRename">Rename</Button>
-        <Button @click="showRenameDialog = false">Cancel</Button>
+        <div class="flex flex-row-reverse gap-2">
+          <Button variant="solid" @click="confirmRename">Rename</Button>
+          <Button @click="showRenameDialog = false">Cancel</Button>
+        </div>
       </template>
     </Dialog>
 
@@ -630,9 +632,11 @@
         </div>
       </template>
       <template #actions>
-        <Button v-if="hasActiveHyperlink" theme="red" @click="removeHyperlink">Remove</Button>
-        <Button variant="solid" @click="confirmHyperlink">Apply</Button>
-        <Button @click="showHyperlinkDialog = false">Cancel</Button>
+        <div class="flex flex-row-reverse gap-2">
+          <Button variant="solid" @click="confirmHyperlink">Apply</Button>
+          <Button v-if="hasActiveHyperlink" theme="red" @click="removeHyperlink">Remove</Button>
+          <Button @click="showHyperlinkDialog = false">Cancel</Button>
+        </div>
       </template>
     </Dialog>
 
@@ -695,9 +699,11 @@
         </div>
       </template>
       <template #actions>
-        <Button variant="solid" @click="confirmValidation">Apply</Button>
-        <Button variant="ghost" theme="red" @click="removeValidation">Remove rule</Button>
-        <Button @click="validationDialog.open = false">Cancel</Button>
+        <div class="flex flex-row-reverse gap-2">
+          <Button variant="solid" @click="confirmValidation">Apply</Button>
+          <Button variant="ghost" theme="red" @click="removeValidation">Remove rule</Button>
+          <Button @click="validationDialog.open = false">Cancel</Button>
+        </div>
       </template>
     </Dialog>
 
@@ -714,8 +720,10 @@
         />
       </template>
       <template #actions>
-        <Button variant="solid" @click="confirmInsertMany">Insert</Button>
-        <Button @click="showInsertManyDialog = false">Cancel</Button>
+        <div class="flex flex-row-reverse gap-2">
+          <Button variant="solid" @click="confirmInsertMany">Insert</Button>
+          <Button @click="showInsertManyDialog = false">Cancel</Button>
+        </div>
       </template>
     </Dialog>
 
@@ -855,9 +863,11 @@
         </div>
       </template>
       <template #actions>
-        <Button v-if="cfDialog.editId !== null" theme="red" @click="deleteCfRule">Delete</Button>
-        <Button variant="solid" @click="saveCfRule">Apply</Button>
-        <Button @click="cfDialog.open = false">Cancel</Button>
+        <div class="flex flex-row-reverse gap-2">
+          <Button variant="solid" @click="saveCfRule">Apply</Button>
+          <Button v-if="cfDialog.editId !== null" theme="red" @click="deleteCfRule">Delete</Button>
+          <Button @click="cfDialog.open = false">Cancel</Button>
+        </div>
       </template>
     </Dialog>
 
