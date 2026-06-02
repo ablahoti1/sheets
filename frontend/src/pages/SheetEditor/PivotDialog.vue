@@ -127,13 +127,15 @@
     </template>
 
     <template #actions>
-      <Button @click="show = false">Cancel</Button>
-      <Button
-        variant="solid"
-        :disabled="!canCreate"
-        :label="pivotId ? 'Update pivot' : 'Create pivot'"
-        @click="onConfirm"
-      />
+      <div class="flex flex-row-reverse gap-2">
+        <Button
+          variant="solid"
+          :disabled="!canCreate"
+          :label="pivotId ? 'Update pivot' : 'Create pivot'"
+          @click="onConfirm"
+        />
+        <Button @click="show = false">Cancel</Button>
+      </div>
     </template>
   </Dialog>
 </template>
