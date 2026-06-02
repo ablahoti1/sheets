@@ -252,23 +252,7 @@
          :class="{ 'sn-painting-format': isPaintingFormat, 'sn-preview-locked': !!vhActive }">
       <canvas ref="canvasRef" />
 
-      <!-- First-time hint. Only shown for a blank workbook on a fresh
-           machine; dismissed forever after the user closes it. Uses
-           Espresso surface tokens so it sits on the canvas without
-           competing for attention. -->
-      <div v-if="showOnboardingHint" class="sn-onboarding-hint">
-        <div class="sn-onboarding-hint-title">Start typing — or try one of these:</div>
-        <ul class="sn-onboarding-hint-list">
-          <li><KeyboardShortcut combo="Mod+K" /> <span>Command palette — every action, searchable</span></li>
-          <li><KeyboardShortcut combo="?" /> <span>Keyboard shortcuts</span></li>
-          <li><KeyboardShortcut combo="Mod+E" /> <span>Smart Fill — type 1–2 examples, then fill the column</span></li>
-        </ul>
-        <div class="sn-onboarding-hint-actions">
-          <Button size="sm" variant="solid" @click="dismissOnboardingHint">Got it</Button>
-        </div>
-      </div>
-
-      <!-- Floating charts (filtered to current sub-sheet by the overlay). -->
+<!-- Floating charts (filtered to current sub-sheet by the overlay). -->
       <ChartOverlay
         :charts="chartList"
         :current-sheet="currentSheet"
@@ -1205,28 +1189,6 @@ const activeNumberFormatType = computed(() => parseNumberFmt(activeNumberFormat.
 const showFindReplace   = ref(false)
 const showShortcutsHelp = ref(false)
 
-// First-time onboarding hint. Persists dismissal across sessions via
-// localStorage, and only shows for blank workbooks so it never gets in
-// the way of users opening an existing sheet.
-const ONBOARDING_HINT_KEY = 'fsn:onboardingHintDismissed'
-const _onboardingHintDismissed = ref(
-  typeof localStorage !== 'undefined' && localStorage.getItem(ONBOARDING_HINT_KEY) === '1',
-)
-const showOnboardingHint = computed(() => {
-  if (_onboardingHintDismissed.value) return false
-  if (isDirty.value) return false
-  // Workbook is "blank" when no sub-sheet has any cell data.
-  const sheets = sheet.getSheetNames()
-  for (const name of sheets) {
-    const raw = sheet.getRawData(name)
-    if (raw && Object.keys(raw).length) return false
-  }
-  return true
-})
-function dismissOnboardingHint() {
-  _onboardingHintDismissed.value = true
-  try { localStorage.setItem(ONBOARDING_HINT_KEY, '1') } catch {}
-}
 const showInsertManyDialog = ref(false)
 const insertMany           = reactive({ kind: 'row', count: 5, below: false })
 const showHyperlinkDialog  = ref(false)
@@ -4023,32 +3985,6 @@ function toggleShowFormulas() {
 .sn-grid-wrap        { flex:1; overflow:hidden; position:relative; background:var(--surface-white); }
 .sn-grid-wrap canvas { display:block; outline:none; }
 
-/* First-run onboarding hint — floats above the empty grid, dismissed forever
-   on click. Anchored bottom-right so it doesn't cover the visible cells. */
-.sn-onboarding-hint {
-  position:absolute; right:24px; bottom:24px;
-  z-index:5;
-  max-width:340px;
-  padding:14px 16px;
-  background:var(--surface-white);
-  border:1px solid var(--outline-gray-1);
-  border-radius:10px;
-  box-shadow:0 8px 24px rgba(0,0,0,0.08), 0 2px 6px rgba(0,0,0,0.04);
-  font-size:13px;
-  color:var(--ink-gray-7);
-}
-.sn-onboarding-hint-title {
-  font-weight:600; color:var(--ink-gray-8); margin-bottom:8px;
-}
-.sn-onboarding-hint-list {
-  list-style:none; padding:0; margin:0 0 10px 0;
-  display:flex; flex-direction:column; gap:6px;
-}
-.sn-onboarding-hint-list li {
-  display:flex; gap:8px; align-items:center; line-height:1.4;
-}
-.sn-onboarding-hint-list span { flex:1; color:var(--ink-gray-7); }
-.sn-onboarding-hint-actions { display:flex; justify-content:flex-end; }
 .sn-painting-format canvas { cursor: crosshair; }
 /* Lock canvas interactions while a past version is being previewed.  The
    side panel + banner stay clickable because they live inside the same
