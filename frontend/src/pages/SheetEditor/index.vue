@@ -126,8 +126,8 @@
       <Button :variant="activeNumberFormatType === 'percentage' ? 'subtle' : 'ghost'" size="sm" label="%" tooltip="Percentage" @click="toggleNumberFmt('percentage')" />
       <Button :variant="activeNumberFormatType === 'number'     ? 'subtle' : 'ghost'" size="sm" label="," tooltip="Thousands separator" @click="toggleNumberFmt('number')" />
       <div class="sn-tool-extra">
-        <Button variant="ghost" size="sm" icon="lucide-trending-down" tooltip="Decrease decimal places" @click="adjustDecimals(-1)" />
-        <Button variant="ghost" size="sm" icon="lucide-trending-up"   tooltip="Increase decimal places" @click="adjustDecimals(+1)" />
+        <Button variant="ghost" size="sm" :icon="DecreaseDecimalIcon" tooltip="Decrease decimal places" @click="adjustDecimals(-1)" />
+        <Button variant="ghost" size="sm" :icon="IncreaseDecimalIcon" tooltip="Increase decimal places" @click="adjustDecimals(+1)" />
       </div>
 
       <div class="sn-vr" />
@@ -969,7 +969,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
+import { h, ref, reactive, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { createGrid }          from '../../canvas/index.js'
 import { colLabel, parseCellId, cellId } from '../../utils/cells.js'
 import { parseNumberFmt, buildNumberFmt, applyNumberFmt } from '../../utils/format-number.js'
@@ -1473,6 +1473,39 @@ const BORDER_STYLE_OPTIONS = [
   { label: 'Medium', value: 'medium' },
   { label: 'Thick',  value: 'thick' },
 ]
+
+// Custom decimals-with-arrow glyphs for the precision toolbar buttons. Not in
+// lucide, so passed as component props through Button's icon API instead of as
+// "lucide-…" strings. stroke-width 1.5 keeps the small inner shapes legible at
+// 16 px (Button sm icon size). currentColor + stroke → inherits text-ink-gray
+// in light + dark mode, same as the neighbouring lucide icons.
+function _decimalsIcon(children) {
+  return {
+    render: () => h('svg', {
+      xmlns: 'http://www.w3.org/2000/svg',
+      viewBox: '0 0 24 24',
+      fill: 'none',
+      stroke: 'currentColor',
+      'stroke-width': 1.5,
+      'stroke-linecap': 'round',
+      'stroke-linejoin': 'round',
+      'aria-hidden': 'true',
+    }, children),
+  }
+}
+const DecreaseDecimalIcon = _decimalsIcon([
+  h('path', { d: 'm13 21-3-3 3-3' }),
+  h('path', { d: 'M20 18H10' }),
+  h('path', { d: 'M3 11h.01' }),
+  h('rect', { x: 6, y: 3, width: 5, height: 8, rx: 2.5 }),
+])
+const IncreaseDecimalIcon = _decimalsIcon([
+  h('path', { d: 'M10 18h10' }),
+  h('path', { d: 'm17 21 3-3-3-3' }),
+  h('path', { d: 'M3 11h.01' }),
+  h('rect', { x: 15, y: 3, width: 5, height: 8, rx: 2.5 }),
+  h('rect', { x: 6,  y: 3, width: 5, height: 8, rx: 2.5 }),
+])
 
 const FILTER_OPERATOR_OPTIONS = [
   { label: 'Contains',     value: 'contains' },
