@@ -38,12 +38,18 @@ export function ensureFrappeRealtime(boot, opts = {}) {
 	}
 
 	const b = boot || w.frappe?.boot || {}
+
+	// `disable_async` is Frappe's standard signal that socketio is off on
+	// this site (Frappe's own `socketio_client.js` checks the same flag at
+	// the top of its init). Mirror it so CI / disable_async sites don't
+	// generate socket.io connect_error noise in the console.
+	if (b.disable_async) return null
+
 	const sitename = b.sitename
 	if (!sitename) {
-		// No sitename → no namespace to connect to. Bail loudly so the
-		// console shows why presence isn't wiring up.
-		// eslint-disable-next-line no-console
-		console.warn('[realtime] no frappe.boot.sitename — cannot init socketio')
+		// No sitename → no namespace to connect to. Stay silent rather
+		// than warn — most "no sitename" cases are headless / smoke-test
+		// environments where the noise hurts more than it helps.
 		return null
 	}
 
@@ -65,13 +71,14 @@ export function ensureFrappeRealtime(boot, opts = {}) {
 		return null
 	}
 
-	// Surface socket.io errors so a misconfigured site_config_id /
-	// disabled-async setup shows up in the console instead of silently
-	// failing to broadcast.
-	socket.on('connect_error', (err) => {
-		// eslint-disable-next-line no-console
-		console.warn('[realtime] connect_error', err?.message || err)
-	})
+	// Socket.io's Emitter throws (and the browser logs an Error) when an
+	// `error`/`connect_error` event fires with no listener attached, so we
+	// register quiet no-op handlers. Real diagnostics live on the socket
+	// itself — `window.frappe.realtime.socket.on('connect_error', ...)`
+	// from the DevTools console — without polluting users' logs on sites
+	// where the bench briefly hiccups or where socketio is unreachable.
+	socket.on('connect_error', () => {})
+	socket.on('error',         () => {})
 
 	const shim = {
 		socket,

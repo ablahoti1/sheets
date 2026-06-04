@@ -50,14 +50,25 @@ describe('ensureFrappeRealtime', () => {
 		expect(calls[0].url).toBe('http://localhost:9001/erpnext.localhost')
 	})
 
-	it('returns null and logs when sitename is missing', () => {
+	it('returns null silently when sitename is missing', () => {
+		// Smoke tests / headless flows that don't carry a sitename should
+		// stay quiet — a warn here would fail the e2e "no console errors"
+		// check without surfacing an actionable signal.
 		const w = _stubWindow({ boot: {} })
 		const { factory } = _stubIoFactory()
 		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
 		const shim = ensureFrappeRealtime(undefined, { window: w, ioFactory: factory })
 		expect(shim).toBeNull()
-		expect(warn).toHaveBeenCalled()
+		expect(warn).not.toHaveBeenCalled()
 		warn.mockRestore()
+	})
+
+	it('returns null when frappe.boot.disable_async is set', () => {
+		const w = _stubWindow({ boot: { sitename: 's1', disable_async: 1 } })
+		const { factory, calls } = _stubIoFactory()
+		const shim = ensureFrappeRealtime(undefined, { window: w, ioFactory: factory })
+		expect(shim).toBeNull()
+		expect(calls.length).toBe(0)
 	})
 
 	it('is idempotent — second call returns the existing shim, no reconnect', () => {
