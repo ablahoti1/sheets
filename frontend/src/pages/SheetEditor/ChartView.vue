@@ -62,9 +62,14 @@ const _wrapStyle = computed(() => ({
   height: _toCssDim(props.height),
 }))
 
-// ECharts re-renders are O(N) on series data; for small N (under a few
-// hundred points) we don't need the lazy / replaceMerge optimisations.
-const UPDATE_OPTS = { notMerge: false, lazyUpdate: false }
+// `notMerge: true` is required for chart-type switches to take effect.
+// With merge enabled (ECharts default), switching from bar → line / area /
+// pie / scatter keeps the previously-installed series components, so the
+// canvas (and the preview in the chart dialog) kept showing a bar chart
+// regardless of which type was selected. notMerge: true replaces every
+// component on each setOption — perf-acceptable at the small N this dialog
+// previews.
+const UPDATE_OPTS = { notMerge: true, lazyUpdate: false }
 
 const option = shallowRef(null)
 let _rafId = 0
