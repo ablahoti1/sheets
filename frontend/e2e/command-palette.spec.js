@@ -1,11 +1,11 @@
 import { test, expect } from '@playwright/test'
-import { openNewSheet, MOD } from './helpers.js'
+import { openNewSheet, pressShortcut, MOD } from './helpers.js'
 
 test.describe('command palette', () => {
   test('Cmd/Ctrl+K opens the palette, Escape closes it', async ({ page }) => {
     await openNewSheet(page)
 
-    await page.keyboard.press(`${MOD}+K`)
+    await pressShortcut(page, `${MOD}+K`)
 
     const palette = page.getByRole('dialog')
     await expect(palette).toBeVisible({ timeout: 5_000 })
