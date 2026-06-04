@@ -1605,8 +1605,16 @@ function clearAllFilterValues() {
 function _filterPanelOutsideClick(e) {
   const t = e.target
   if (!t || !(t instanceof Element)) return
-  if (t.closest('.sn-filter-panel')) return     // click inside the popover itself
-  if (t.closest('.sn-filter-btn'))   return     // click on a chevron toggles its own panel
+  if (t.closest('.sn-filter-panel'))         return  // click inside the popover itself
+  if (t.closest('.sn-filter-btn'))           return  // click on a chevron toggles its own panel
+  // Frappe UI's Select/Combobox/Dropdown render their dropdown into a portal
+  // (SelectPortal → body), so the listbox options live OUTSIDE the panel's
+  // DOM subtree. Without this exemption, clicking "Equals" / "Greater than"
+  // on the condition-mode operator picker fired the outside-click handler
+  // and slammed the whole panel shut. The portaled content is tagged with
+  // data-slot="content" on the wrapper, so an ancestor match catches every
+  // descendant click (items, scroll viewport, etc.).
+  if (t.closest('[data-slot="content"]'))    return
   filterPanel.open = false
 }
 watch(() => filterPanel.open, (open) => {
