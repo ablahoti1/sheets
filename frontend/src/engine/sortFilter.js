@@ -129,8 +129,34 @@ export function createSortFilter(sheet) {
       else if (op === 'lt'        && !(parseFloat(cellVal) < parseFloat(specVal)))           return true
       else if (op === 'empty'     && cellVal !== '')                                         return true
       else if (op === 'notempty'  && cellVal === '')                                         return true
+      // Google-Sheets-style "Filter by values": spec.values is an array of the
+      // values the user CHECKED to keep visible. Anything not in the set is
+      // hidden. Empty cells are represented by the empty string in the array.
+      else if (op === 'inSet'     && !(spec.values || []).includes(cellVal))                 return true
     }
     return false
+  }
+
+  // Distinct displayed values within the column's data range (header row is
+  // excluded). Drives the "Filter by values" checklist in the UI.
+  function getColumnValues(colIdx, sheetName) {
+    const range = getRange(sheetName)
+    if (!range || !_inCols(colIdx, range)) return []
+    const rows = _getDisplayRows()
+    const seen = new Set()
+    const start = range.r0 + 1, end = Math.min(range.r1, rows.length - 1)
+    for (let r = start; r <= end; r++) {
+      seen.add(String(rows[r]?.[colIdx] ?? ''))
+    }
+    // Sort so the list is stable across opens; empty string first so
+    // "(Blanks)" sits at the top like Google Sheets.
+    return [...seen].sort((a, b) => {
+      if (a === '' && b !== '') return -1
+      if (b === '' && a !== '') return 1
+      const an = parseFloat(a), bn = parseFloat(b)
+      if (!isNaN(an) && !isNaN(bn)) return an - bn
+      return a.localeCompare(b)
+    })
   }
 
   // Returns a Set of row indices that should be hidden in the given sheet.
@@ -218,6 +244,7 @@ export function createSortFilter(sheet) {
 
   return {
     sort, setFilter, clearFilter, clearAll, getFilterConfig, computeHiddenRows,
+    getColumnValues,
     setRange, getRange, clearRange, hasFilter,
     insertRow, deleteRow, insertCol, deleteCol,
     renameSheet, deleteSheet, duplicateSheet, snapshot, restore,

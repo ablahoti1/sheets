@@ -392,27 +392,87 @@
         </template>
       </Dropdown>
 
-      <!-- Inline filter panel -->
+      <!-- Inline filter panel — sort + condition + Google-Sheets-style
+           "Filter by values" checklist with search and Select all/Clear. -->
       <div v-if="filterPanel.open" class="sn-filter-panel" :style="filterPanel.style">
         <div class="sn-fp-title">Column {{ colLabel(filterPanel.col) }}</div>
         <div class="sn-fp-row">
           <Button class="sn-fp-grow" size="sm" iconLeft="arrow-up"   label="A → Z" tooltip="Sort ascending"  @click="doSort(filterPanel.col, 'asc')" />
           <Button class="sn-fp-grow" size="sm" iconLeft="arrow-down" label="Z → A" tooltip="Sort descending" @click="doSort(filterPanel.col, 'desc')" />
         </div>
-        <FormControl
-          type="select"
-          size="sm"
-          v-model="filterPanel.operator"
-          :options="FILTER_OPERATOR_OPTIONS"
-        />
-        <FormControl
-          v-if="!['empty','notempty'].includes(filterPanel.operator)"
-          type="text"
-          size="sm"
-          v-model="filterPanel.value"
-          placeholder="Value"
-          @keydown.enter="applyFilter"
-        />
+
+        <!-- Mode toggle: condition vs values. Both share Apply/Clear actions
+             at the bottom so the user can flip between modes before committing. -->
+        <div class="sn-fp-mode" role="tablist" aria-label="Filter mode">
+          <Button
+            class="sn-fp-grow"
+            size="sm"
+            :variant="filterPanel.mode === 'values' ? 'subtle' : 'ghost'"
+            label="Filter by values"
+            @click="filterPanel.mode = 'values'"
+          />
+          <Button
+            class="sn-fp-grow"
+            size="sm"
+            :variant="filterPanel.mode === 'condition' ? 'subtle' : 'ghost'"
+            label="Filter by condition"
+            @click="filterPanel.mode = 'condition'"
+          />
+        </div>
+
+        <!-- Filter by values -->
+        <template v-if="filterPanel.mode === 'values'">
+          <div class="sn-fp-vlinks">
+            <Button variant="ghost" size="sm" label="Select all" @click="selectAllFilterValues" />
+            <Button variant="ghost" size="sm" label="Clear" @click="clearAllFilterValues" />
+            <span class="sn-fp-count">Displaying {{ filterPanel.valueSet.size }}</span>
+          </div>
+          <FormControl
+            type="text"
+            size="sm"
+            v-model="filterPanel.valueSearch"
+            placeholder="Search…"
+          >
+            <template #prefix>
+              <FeatherIcon name="search" class="sn-fp-search-icon" />
+            </template>
+          </FormControl>
+          <div class="sn-fp-values">
+            <div
+              v-for="v in filteredFilterValues"
+              :key="v || '__blanks__'"
+              class="sn-fp-value-row"
+              @click="toggleFilterValue(v)"
+            >
+              <Checkbox
+                :modelValue="filterPanel.valueSet.has(v)"
+                @update:modelValue="toggleFilterValue(v)"
+                @click.stop
+              />
+              <span class="sn-fp-value-text">{{ v === '' ? '(Blanks)' : v }}</span>
+            </div>
+            <div v-if="!filteredFilterValues.length" class="sn-fp-empty">No matching values</div>
+          </div>
+        </template>
+
+        <!-- Filter by condition -->
+        <template v-else>
+          <FormControl
+            type="select"
+            size="sm"
+            v-model="filterPanel.operator"
+            :options="FILTER_OPERATOR_OPTIONS"
+          />
+          <FormControl
+            v-if="!['empty','notempty'].includes(filterPanel.operator)"
+            type="text"
+            size="sm"
+            v-model="filterPanel.value"
+            placeholder="Value"
+            @keydown.enter="applyFilter"
+          />
+        </template>
+
         <div class="sn-fp-actions">
           <Button class="sn-fp-grow" variant="solid" size="sm" label="Apply" @click="applyFilter" />
           <Button class="sn-fp-grow"                 size="sm" label="Clear" @click="clearFilterCol" />
@@ -953,7 +1013,7 @@ import { getFunctionNames }    from '../../engine/formula.js'
 import NamedRangesDialog       from './NamedRangesDialog.vue'
 import { useSmartFill }        from './useSmartFill.js'
 import * as versionsApi        from '../../services/versions.js'
-import { KeyboardShortcut, TextInput } from 'frappe-ui'
+import { Checkbox, KeyboardShortcut, TextInput } from 'frappe-ui'
 
 const props = defineProps({ id: { type: String, default: 'new' } })
 const emit  = defineEmits(['close', 'saved'])
@@ -1498,9 +1558,43 @@ const { exportCSV, exportXLSX, exportPDF, importCSV, importXLSX } = useExportImp
   history,
 })
 
+// Filter panel state.
+//   - mode: 'values' (Google-Sheets-style checklist) or 'condition' (operator
+//     + value). Default to 'values' since that's the more discoverable path.
+//   - valueSet: which distinct displayed values are currently checked. Stored
+//     as a real Set for O(1) toggles; serialised to an array when persisted
+//     via sortFilter.setFilter.
+//   - allValues: distinct displayed values in the column's data range, cached
+//     while the panel is open so we don't recompute on every keystroke.
 const filterPanel = reactive({
-  open: false, col: 0, operator: 'contains', value: '', style: {},
+  open: false, col: 0, style: {},
+  mode: 'values',
+  operator: 'contains', value: '',
+  valueSet: new Set(),
+  valueSearch: '',
+  allValues: [],
 })
+
+const filteredFilterValues = computed(() => {
+  const q = filterPanel.valueSearch.trim().toLowerCase()
+  if (!q) return filterPanel.allValues
+  return filterPanel.allValues.filter(v => String(v).toLowerCase().includes(q))
+})
+
+function toggleFilterValue(v) {
+  if (filterPanel.valueSet.has(v)) filterPanel.valueSet.delete(v)
+  else                             filterPanel.valueSet.add(v)
+}
+
+function selectAllFilterValues() {
+  // Only the values currently visible under the search filter — matches
+  // Google Sheets behaviour where "Select all" respects the search box.
+  for (const v of filteredFilterValues.value) filterPanel.valueSet.add(v)
+}
+
+function clearAllFilterValues() {
+  for (const v of filteredFilterValues.value) filterPanel.valueSet.delete(v)
+}
 
 // Auto-close the filter popover on any click outside its body or the
 // chevron that opened it. Mirrors how Google Sheets handles this — users
@@ -3386,15 +3480,37 @@ function _removeFilter() {
 function openFilterPanel(colIdx, event) {
   const rect = event.target.getBoundingClientRect()
   const wrapRect = gridWrapRef.value.getBoundingClientRect()
-  const cfg = sortFilter.getFilterConfig(sheet.getCurrentSheet())
-  filterPanel.open     = true
-  filterPanel.col      = colIdx
-  filterPanel.operator = cfg[colIdx]?.operator || 'contains'
-  filterPanel.value    = cfg[colIdx]?.value    || ''
-  filterPanel.style    = {
+  const sn  = sheet.getCurrentSheet()
+  const cfg = sortFilter.getFilterConfig(sn)
+  const existing = cfg[colIdx]
+  const allValues = sortFilter.getColumnValues(colIdx, sn)
+  filterPanel.col       = colIdx
+  filterPanel.allValues = allValues
+  filterPanel.valueSearch = ''
+  // Decide initial mode + state from the existing spec (if any). `inSet`
+  // → values mode with the saved selection; condition-style ops → condition
+  // mode; nothing saved → default values mode with every value checked.
+  if (existing?.operator === 'inSet') {
+    filterPanel.mode      = 'values'
+    filterPanel.operator  = 'contains'
+    filterPanel.value     = ''
+    filterPanel.valueSet  = new Set(existing.values || [])
+  } else if (existing) {
+    filterPanel.mode      = 'condition'
+    filterPanel.operator  = existing.operator || 'contains'
+    filterPanel.value     = existing.value    || ''
+    filterPanel.valueSet  = new Set(allValues)
+  } else {
+    filterPanel.mode      = 'values'
+    filterPanel.operator  = 'contains'
+    filterPanel.value     = ''
+    filterPanel.valueSet  = new Set(allValues)
+  }
+  filterPanel.style = {
     top:  (rect.bottom - wrapRect.top + 2) + 'px',
     left: (rect.left   - wrapRect.left)    + 'px',
   }
+  filterPanel.open = true
 }
 
 // Alt+↓ on a canvas cell opens the filter panel for that cell's column. Forces
@@ -3425,11 +3541,26 @@ function openQuickFilterForActive() {
 }
 
 function applyFilter() {
-  sortFilter.setFilter(
-    filterPanel.col,
-    { operator: filterPanel.operator, value: filterPanel.value },
-    sheet.getCurrentSheet(),
-  )
+  const sn = sheet.getCurrentSheet()
+  if (filterPanel.mode === 'values') {
+    // No-op safety: an all-checked selection is identical to no filter at
+    // all, so clear the column entry instead of saving every value.
+    if (filterPanel.valueSet.size === filterPanel.allValues.length) {
+      sortFilter.clearFilter(filterPanel.col, sn)
+    } else {
+      sortFilter.setFilter(
+        filterPanel.col,
+        { operator: 'inSet', values: [...filterPanel.valueSet] },
+        sn,
+      )
+    }
+  } else {
+    sortFilter.setFilter(
+      filterPanel.col,
+      { operator: filterPanel.operator, value: filterPanel.value },
+      sn,
+    )
+  }
   filterPanel.open = false
   _repopulateGrid()
   _applyHiddenRows()
@@ -4180,11 +4311,24 @@ function toggleShowFormulas() {
   max-width:140px; overflow:hidden; text-overflow:ellipsis;
 }
 
-.sn-filter-panel { position:absolute; z-index:100; background:var(--surface-modal); border:1px solid var(--outline-gray-modals); border-radius:10px; box-shadow:0 0 1px rgba(0,0,0,.35), 0 6px 8px -4px rgba(0,0,0,.1); padding:12px; width:232px; display:flex; flex-direction:column; gap:8px; }
+.sn-filter-panel { position:absolute; z-index:100; background:var(--surface-modal); border:1px solid var(--outline-gray-modals); border-radius:10px; box-shadow:0 0 1px rgba(0,0,0,.35), 0 6px 8px -4px rgba(0,0,0,.1); padding:12px; width:260px; display:flex; flex-direction:column; gap:8px; }
 .sn-fp-title   { font-size:12px; font-weight:600; letter-spacing:.02em; color:var(--ink-gray-8); padding-bottom:2px; }
 .sn-fp-row     { display:flex; gap:4px; }
+.sn-fp-mode    { display:flex; gap:2px; padding:2px; border:1px solid var(--outline-gray-2); border-radius:8px; background:var(--surface-white); }
 .sn-fp-actions { display:flex; gap:4px; padding-top:2px; }
 .sn-fp-grow    { flex:1; }
+
+/* "Filter by values" mode — every interactive element is a Frappe UI primitive
+   (Button, Checkbox, FormControl), so the per-class rules here only handle
+   layout and the value-list row chrome. */
+.sn-fp-vlinks         { display:flex; align-items:center; gap:2px; }
+.sn-fp-count          { margin-left:auto; font-size:11px; letter-spacing:.02em; color:var(--ink-gray-5); }
+.sn-fp-search-icon    { width:13px; height:13px; color:var(--ink-gray-5); }
+.sn-fp-values         { max-height:200px; overflow-y:auto; border:1px solid var(--outline-gray-2); border-radius:8px; padding:4px 0; background:var(--surface-white); }
+.sn-fp-value-row      { display:flex; align-items:center; gap:8px; padding:5px 10px; cursor:pointer; font-size:13px; letter-spacing:.01em; color:var(--ink-gray-8); }
+.sn-fp-value-row:hover { background:var(--surface-gray-2); }
+.sn-fp-value-text     { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.sn-fp-empty          { padding:12px 10px; font-size:12px; color:var(--ink-gray-5); text-align:center; }
 
 /* ── Bottom · tabs + stats ───────────────────────────────────────────────── */
 .sn-bottom { display:flex; align-items:stretch; height:36px; border-top:1px solid var(--outline-gray-2); background:var(--surface-menu-bar); flex-shrink:0; overflow:hidden; }
