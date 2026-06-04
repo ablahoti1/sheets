@@ -738,7 +738,13 @@ export function createGrid(canvas, { onSelect, onCommit, onInput, onCancel, getF
   // ── Fill handle ──────────────────────────────────────────────────────────────
 
   function _fillHandlePos() {
-    const { r1, c1 } = getSelRange()
+    let { r1, c1 } = getSelRange()
+    // Extend to the merge's far corner so a single-merged-cell selection
+    // hit-tests at the same bottom-right point the painter draws the dot at.
+    // Without this, the dot rendered correctly but mousedowns landed on the
+    // master cell's bottom-right (mid-block) and the drag never engaged.
+    const m = getMergeInfo?.(cellId(r1, c1))
+    if (m) { r1 += m.rowSpan - 1; c1 += m.colSpan - 1 }
     return {
       fx: geo.colX(c1) + geo.cw(c1),
       fy: geo.rowY(r1) + geo.rh(r1),

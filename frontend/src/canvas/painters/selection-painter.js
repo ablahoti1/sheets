@@ -29,7 +29,16 @@ export function createSelectionPainter(ctx, { cw, rh, colX, rowY }) {
     ctx.lineWidth = 2
     ctx.strokeRect(colX(sel.c) + 1, rowY(sel.r) + 1, mergedW - 2, mergedH - 2)
     ctx.lineWidth = 1
-    _drawFillHandle(range)
+    // Fill handle anchors at the bottom-right of the *visible* selection.
+    // For a single merged cell, range is just the master cell coords, so
+    // we extend r1/c1 to the merge's far corner — otherwise the dot sits
+    // in the middle of the merged block instead of at its bottom-right.
+    const handleRange = {
+      r0: range.r0, c0: range.c0,
+      r1: Math.max(range.r1, sel.r + spanR - 1),
+      c1: Math.max(range.c1, sel.c + spanC - 1),
+    }
+    _drawFillHandle(handleRange)
     ctx.restore()
   }
 
