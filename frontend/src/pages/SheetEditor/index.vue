@@ -373,6 +373,16 @@
         <span class="sn-remote-cursor-label">{{ cur.firstName }}</span>
       </div>
 
+      <!-- Pivot highlight overlay — thin coloured border drawn over the
+           pivot output range so users can tell it's a generated table.
+           pointer-events:none so the canvas keeps receiving clicks. -->
+      <div
+        v-if="activePivotConfig && pivotHighlightStyle"
+        class="sn-pivot-highlight"
+        :style="pivotHighlightStyle"
+        aria-hidden="true"
+      />
+
       <!-- Pivot FAB — floats below the Grand Total row, like Google Sheets -->
       <Dropdown v-if="activePivotConfig && pivotFabStyle" :options="pivotBannerMenuOptions" placement="top-start">
         <template #default="{ open }">
@@ -1772,7 +1782,7 @@ const renderVersion = ref(0)
 // Pivot integration — placed here because switchSheet/syncNames come from useSheetTabs above.
 const {
   pivotDialogOpen, pivotInitialRange, pivotEditId, pivotEditConfig, pivotVersion,
-  activePivotConfig, pivotFabStyle, pivotBannerMenuOptions,
+  activePivotConfig, pivotFabStyle, pivotHighlightStyle, pivotBannerMenuOptions,
   isPivotSheet, openPivotDialog, onPivotEdit, onPivotRefresh, onPivotDelete, onPivotConfirm,
   recomputePivotsForSheet,
 } = usePivotIntegration({
@@ -4016,6 +4026,15 @@ function toggleShowFormulas() {
   box-shadow: 0 3px 12px rgba(0,0,0,.16);
 }
 .sn-pivot-fab-icon { width: 13px; height: 13px; }
+
+/* Pivot highlight overlay — coloured outline drawn over the pivot output
+   range. pointer-events:none keeps clicks reaching the canvas underneath. */
+.sn-pivot-highlight {
+  position: absolute; z-index: 15; pointer-events: none;
+  border: 1.5px solid #0E7490;
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px rgba(14, 116, 144, .12) inset;
+}
 
 /* ── Bar 2 · Formula bar ─────────────────────────────────────────────────── */
 

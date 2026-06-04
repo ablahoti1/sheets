@@ -1,4 +1,4 @@
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { computePivot, writePivotToSheet } from '../../engine/pivot.js'
 import { colLabel } from '../../utils/cells.js'
 
@@ -27,9 +27,11 @@ export function usePivotIntegration({
   const pivotEditId       = ref('')
   const pivotEditConfig   = ref(null)
   const pivotVersion      = ref(0)
-  // Row count of the last-rendered pivot output; used to position the edit FAB
-  // without re-running the full computePivot() on every canvas render frame.
+  // Row/column count of the last-rendered pivot output; used to position the
+  // edit FAB and the highlight overlay without re-running the full
+  // computePivot() on every canvas render frame.
   const _pivotRowCount    = ref(0)
+  const _pivotColCount    = ref(0)
 
   // Every engine mutation (including restore on page reload) bumps the version,
   // so reactive computeds like `activePivotConfig` re-evaluate. Without this,
@@ -52,6 +54,24 @@ export function usePivotIntegration({
 
   function isPivotSheet(name) { return pivotSheetNames.value.has(name) }
 
+  // After a page reload, pivot.restore() puts the config back but never calls
+  // _applyPivotOutput, so the in-memory _pivotRowCount stays at 0 — and both
+  // the edit FAB and the highlight overlay (which gate on rows > 0) silently
+  // hide. Watch the active config: when it becomes non-null, do a READ-ONLY
+  // computePivot() to derive dimensions. We don't go through _applyPivotOutput
+  // because its setCell writes would bump renderVersion and could mark the
+  // sheet dirty even though the cells already match the saved snapshot.
+  watch(activePivotConfig, (cfg) => {
+    if (!cfg) {
+      _pivotRowCount.value = 0
+      _pivotColCount.value = 0
+      return
+    }
+    const table = computePivot(cfg, (s, e, sh) => sheet.getRangeValues(s, e, sh))
+    _pivotRowCount.value = table.length
+    _pivotColCount.value = table[0]?.length || 0
+  }, { immediate: true })
+
   // Positions the edit FAB below the Grand Total row without re-running
   // computePivot() — _pivotRowCount is updated whenever pivot output is written.
   const pivotFabStyle = computed(() => {
@@ -64,6 +84,29 @@ export function usePivotIntegration({
     const rect = grid.getCellRect?.(rows - 1, 0)
     if (!rect) return null
     return { top: (rect.y + rect.height + 6) + 'px', left: rect.x + 'px' }
+  })
+
+  // Highlight overlay — a thin coloured border drawn over the pivot output
+  // range so users can see it's a generated table (Google Sheets does the
+  // same). Anchored on getCellRect of the top-left and bottom-right output
+  // cells; tracks scroll/zoom via the renderVersion read.
+  const pivotHighlightStyle = computed(() => {
+    void pivotVersion.value
+    renderVersion.value
+    const cfg  = activePivotConfig.value
+    const grid = getGrid()
+    const rows = _pivotRowCount.value
+    const cols = _pivotColCount.value
+    if (!grid || !cfg || !rows || !cols) return null
+    const tl = grid.getCellRect?.(0, 0)
+    const br = grid.getCellRect?.(rows - 1, cols - 1)
+    if (!tl || !br) return null
+    return {
+      top:    tl.y + 'px',
+      left:   tl.x + 'px',
+      width:  (br.x + br.width  - tl.x) + 'px',
+      height: (br.y + br.height - tl.y) + 'px',
+    }
   })
 
   const pivotBannerMenuOptions = [
@@ -113,6 +156,7 @@ export function usePivotIntegration({
   function _applyPivotOutput(config) {
     const table = computePivot(config, (s, e, sh) => sheet.getRangeValues(s, e, sh))
     _pivotRowCount.value = table.length
+    _pivotColCount.value = table[0]?.length || 0
     writePivotToSheet(
       table, config.outputSheet,
       (id, val, sh) => sheet.setCell(id, val, sh),
@@ -153,7 +197,7 @@ export function usePivotIntegration({
 
   return {
     pivotDialogOpen, pivotInitialRange, pivotEditId, pivotEditConfig, pivotVersion,
-    activePivotConfig, pivotFabStyle, pivotBannerMenuOptions,
+    activePivotConfig, pivotFabStyle, pivotHighlightStyle, pivotBannerMenuOptions,
     isPivotSheet, openPivotDialog, onPivotEdit, onPivotRefresh, onPivotDelete, onPivotConfirm,
     recomputePivotsForSheet,
   }
