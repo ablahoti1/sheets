@@ -2,6 +2,7 @@
   <div class="cv-wrap" :style="_wrapStyle">
     <VChart
       v-if="option"
+      :key="config.chartType"
       class="cv-chart"
       :option="option"
       :update-options="UPDATE_OPTS"
@@ -62,13 +63,12 @@ const _wrapStyle = computed(() => ({
   height: _toCssDim(props.height),
 }))
 
-// `notMerge: true` is required for chart-type switches to take effect.
-// With merge enabled (ECharts default), switching from bar → line / area /
-// pie / scatter keeps the previously-installed series components, so the
-// canvas (and the preview in the chart dialog) kept showing a bar chart
-// regardless of which type was selected. notMerge: true replaces every
-// component on each setOption — perf-acceptable at the small N this dialog
-// previews.
+// `notMerge: true` clears component-level state (axes / legend) on every
+// setOption. Combined with the `:key="config.chartType"` on <VChart>
+// (which forces a fresh ECharts instance whenever the type changes), this
+// guarantees switches like bar → area don't leave residual series of the
+// previous type behind — a class of bug ECharts is famously fiddly about
+// when series.type alone is mutated in place.
 const UPDATE_OPTS = { notMerge: true, lazyUpdate: false }
 
 const option = shallowRef(null)
