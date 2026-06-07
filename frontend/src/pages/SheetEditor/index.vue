@@ -2259,8 +2259,12 @@ function _fillValidation(src, total, sn) {
 
 // _runFill modes: 'auto' | 'series' | 'copy' | 'format-only' | 'without-format'
 function _runFill(src, total, mode) {
-  const sheetName  = sheet.getCurrentSheet()
-  const fillBefore = _captureRange(total, sheetName)
+  const sheetName       = sheet.getCurrentSheet()
+  const fillBefore      = _captureRange(total, sheetName)
+  const beforeFmt       = _captureFormatsRange(total, sheetName)
+  const beforeVal       = _captureValidationRange(total, sheetName)
+  const beforeMergeSnap = merge.snapshot?.()
+  const cfBefore        = condFormat?.getRules?.(sheetName)?.length ?? 0
   if (mode === 'format-only') {
     _fillFormatsOnly(src, total, sheetName)
   } else {
@@ -2278,14 +2282,46 @@ function _runFill(src, total, mode) {
   if (mode !== 'without-format') {
     _fillMerges(src, total)
   }
-  const fillAfter = _captureRange(total, sheetName)
-  const refs = _diffRefs(fillBefore, fillAfter)
+  const fillAfter      = _captureRange(total, sheetName)
+  const afterFmt       = _captureFormatsRange(total, sheetName)
+  const afterVal       = _captureValidationRange(total, sheetName)
+  const afterMergeSnap = merge.snapshot?.()
+  const cfAfter        = condFormat?.getRules?.(sheetName)?.length ?? 0
+  const refs           = _diffRefs(fillBefore, fillAfter)
+  // Server sync — queue the value diff regardless of how history records it.
   if (refs.length) {
     _queueOp({ opType: 'fill', subSheet: sheetName,
                cellRefs: refs, before: fillBefore, after: fillAfter,
                summary: _fillSummary(mode, refs.length) })
   }
-  markEdited()
+  // History — the previous markEdited() path pushed a full snapshot, but
+  // history.undo() can't roll a snapshot back when its preceding entry is
+  // an op (no earlier snapshot to restore from), so undoing a fill that
+  // came after cell edits silently no-op'd the fill and started peeling
+  // off the prior cell edits instead — that's the "1, 2 drag-fill to 7,
+  // undo clears A2 first" report. The op-based path mirrors paste's
+  // shape, which the history's revertOp already round-trips correctly.
+  const mergeChanged = JSON.stringify(beforeMergeSnap) !== JSON.stringify(afterMergeSnap)
+  const cfChanged    = cfBefore !== cfAfter
+  if (refs.length && !mergeChanged && !cfChanged) {
+    history.pushOp({
+      opType:    'fill',
+      subSheet:  sheetName,
+      cellRefs:  refs,
+      before:    fillBefore,    after:    fillAfter,
+      beforeFormats:    beforeFmt, afterFormats:    afterFmt,
+      beforeValidation: beforeVal, afterValidation: afterVal,
+    })
+    syncFlags()
+    isDirty.value = true
+  } else {
+    // Fill touched the merge engine and/or condFormat rules, neither of
+    // which the op shape models. Fall back to a full snapshot — slow but
+    // captures everything. This path still has the snap-after-op edge
+    // case, but only kicks in for fills with merged source cells or
+    // CF rules in scope, which is rare.
+    markEdited()
+  }
 }
 
 function _fillSummary(mode, n) {
