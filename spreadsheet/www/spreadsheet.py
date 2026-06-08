@@ -9,28 +9,35 @@ import frappe
 # Vite emits content-hashed filenames (e.g. `index.abc123.js`) plus a manifest
 # at `<outDir>/.vite/manifest.json` mapping logical sources to their hashed
 # outputs. The Jinja template needs the current hashed URLs at render time;
-# we read the manifest once per worker process (it doesn't change without an
-# app restart) and fall back to legacy unhashed paths if it's missing — that
-# keeps things working in dev where vite serves the SPA itself and there's no
-# build output here at all.
+# we cache the parsed manifest keyed on its mtime so `bench build` is picked
+# up without a worker restart, and fall back to legacy unhashed paths if the
+# file is missing — keeps things working in dev where vite serves the SPA
+# itself and there's no build output here at all.
 
 _ASSET_BASE = "/assets/spreadsheet/spreadsheet/"
 _ASSET_CACHE = None
+_ASSET_CACHE_MTIME = None
 
 
 def _read_asset_manifest() -> dict:
-    global _ASSET_CACHE
-    if _ASSET_CACHE is not None:
-        return _ASSET_CACHE
+    global _ASSET_CACHE, _ASSET_CACHE_MTIME
     path = os.path.join(
         frappe.get_app_path("spreadsheet"),
         "public", "spreadsheet", ".vite", "manifest.json",
     )
     try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        _ASSET_CACHE, _ASSET_CACHE_MTIME = {}, None
+        return _ASSET_CACHE
+    if _ASSET_CACHE is not None and _ASSET_CACHE_MTIME == mtime:
+        return _ASSET_CACHE
+    try:
         with open(path) as fh:
             _ASSET_CACHE = json.load(fh)
+        _ASSET_CACHE_MTIME = mtime
     except (FileNotFoundError, json.JSONDecodeError):
-        _ASSET_CACHE = {}
+        _ASSET_CACHE, _ASSET_CACHE_MTIME = {}, None
     return _ASSET_CACHE
 
 
@@ -83,3 +90,14 @@ def get_context(context):
 
     # Vite-emitted hashed bundle URLs — see _asset_paths above.
     context.assets = _asset_paths()
+
+    # Optional Sentry — off unless the site explicitly opts in via
+    # `spreadsheet_sentry_dsn` in site_config.json. The SPA's
+    # frontend/src/utils/sentry.js reads these off window.frappe.boot
+    # and short-circuits when the DSN is empty.
+    context.sentry_dsn         = frappe.conf.get("spreadsheet_sentry_dsn") or ""
+    context.sentry_environment = (
+        frappe.conf.get("spreadsheet_sentry_environment")
+        or ("development" if frappe.conf.get("developer_mode") else "production")
+    )
+    context.sentry_release = frappe.conf.get("spreadsheet_sentry_release") or ""

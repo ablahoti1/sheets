@@ -18,7 +18,7 @@
     "name": "vue.runtime.esm-bundler"
   },
   "index.html": {
-    "file": "index.BP7JDGA5.js",
+    "file": "index.D2khBCtv.js",
     "name": "index",
     "src": "index.html",
     "isEntry": true,
@@ -28,18 +28,25 @@
     ],
     "dynamicImports": [
       "node_modules/xlsx/xlsx.mjs",
-      "src/pages/SheetEditor/ChartView.vue"
+      "src/pages/SheetEditor/ChartView.vue",
+      "node_modules/@sentry/vue/build/esm/index.js"
     ],
     "css": [
-      "index.B3aQJvAG.css"
+      "index.CAJlACGd.css"
     ],
     "assets": [
       "Inter.var.C9xDBOS3.woff2",
       "Inter-Italic.var.BGHziHgI.woff2"
     ]
   },
+  "node_modules/@sentry/vue/build/esm/index.js": {
+    "file": "esm.Bezaw5-N.js",
+    "name": "esm",
+    "src": "node_modules/@sentry/vue/build/esm/index.js",
+    "isDynamicEntry": true
+  },
   "node_modules/frappe-ui/src/components/TextEditor/components/FontColor.vue": {
-    "file": "FontColor.CubKsV0Q.js",
+    "file": "FontColor.CsNcEiaC.js",
     "name": "FontColor",
     "src": "node_modules/frappe-ui/src/components/TextEditor/components/FontColor.vue",
     "isDynamicEntry": true,
@@ -49,7 +56,7 @@
     ]
   },
   "node_modules/frappe-ui/src/components/TextEditor/extensions/iframe/InsertIframe.vue": {
-    "file": "InsertIframe.lNOcxX-q.js",
+    "file": "InsertIframe.BhoxSOlC.js",
     "name": "InsertIframe",
     "src": "node_modules/frappe-ui/src/components/TextEditor/extensions/iframe/InsertIframe.vue",
     "isDynamicEntry": true,
@@ -67,7 +74,7 @@
     "src": "node_modules/frappe-ui/src/fonts/Inter/Inter.var.woff2"
   },
   "node_modules/vue-echarts/dist/index.js": {
-    "file": "dist.CuZzHGyE.js",
+    "file": "dist.DD9_HHbE.js",
     "name": "dist",
     "src": "node_modules/vue-echarts/dist/index.js",
     "isDynamicEntry": true,
@@ -77,13 +84,13 @@
     ]
   },
   "node_modules/xlsx/xlsx.mjs": {
-    "file": "xlsx.fYnRWEjy.js",
+    "file": "xlsx.CvYVnNHh.js",
     "name": "xlsx",
     "src": "node_modules/xlsx/xlsx.mjs",
     "isDynamicEntry": true
   },
   "src/pages/SheetEditor/ChartView.vue": {
-    "file": "ChartView.Ad296TfW.js",
+    "file": "ChartView.BZhcEB1D.js",
     "name": "ChartView",
     "src": "src/pages/SheetEditor/ChartView.vue",
     "isDynamicEntry": true,

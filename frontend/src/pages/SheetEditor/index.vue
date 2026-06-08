@@ -226,7 +226,27 @@
             <Button :variant="open ? 'subtle' : 'ghost'" size="sm" icon="lucide-layout-grid" tooltip="Borders" />
           </template>
         </Dropdown>
-        <Button variant="ghost" size="sm" icon="maximize-2" tooltip="Merge / unmerge cells" @click="toggleMerge" />
+        <!-- Custom merge glyph (Google Material Symbols Light) — reads as
+             "join two cells" better than the generic maximize-2 icon. -->
+        <Button variant="ghost" size="sm" tooltip="Merge / unmerge cells" @click="toggleMerge">
+          <template #icon>
+            <svg viewBox="0 0 24 24" class="sn-merge-glyph" aria-hidden="true">
+              <!-- Material Symbols Light is intentionally a thin stroke;
+                   paint a matching-color stroke over the fill to bring the
+                   visible weight up to feather/lucide ~1.5–2 px equivalent
+                   so this button doesn't look anaemic next to its neighbours. -->
+              <path
+                fill="currentColor"
+                stroke="currentColor"
+                stroke-width="0.75"
+                stroke-linejoin="round"
+                stroke-linecap="round"
+                paint-order="stroke fill"
+                d="M3.5 20.5v-5h1v4h4v1zm12 0v-1h4v-4h1v5zm-8.325-5.386l-.713-.689L8.387 12.5H2.5v-1h5.887L6.462 9.575l.713-.688L10.289 12zm9.65 0L13.712 12l3.113-3.113l.713.688l-1.925 1.925H21.5v1h-5.886l1.924 1.925zM3.5 8.5v-5h5v1h-4v4zm16 0v-4h-4v-1h5v5z"
+              />
+            </svg>
+          </template>
+        </Button>
         <div class="sn-vr" />
         <Button variant="ghost" size="sm" icon="bar-chart-2" tooltip="Insert chart" @click="openChartDialog()" />
       </div>
@@ -4598,6 +4618,7 @@ function toggleShowFormulas() {
 .sn-swatch-btn:hover { background:var(--surface-gray-3); }
 .sn-swatch-btn input[type=color] { position:absolute; opacity:0; width:100%; height:100%; left:0; top:0; cursor:pointer; }
 .sn-swatch-glyph     { width:14px; height:14px; color:var(--ink-gray-8); pointer-events:none; }
+.sn-merge-glyph      { width:16px; height:16px; color:currentColor; pointer-events:none; }
 .sn-swatch-underline { width:16px; height:3px; border-radius:1px; pointer-events:none; }
 .sn-swatch-fill      { border:1px solid var(--outline-gray-2); }
 

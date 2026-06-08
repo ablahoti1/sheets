@@ -33,6 +33,9 @@
         sid: {{ session_sid | tojson }},
         sitename: {{ sitename | tojson }},
         socketio_port: {{ socketio_port | tojson }},
+        sentry_dsn:         {{ sentry_dsn         | tojson }},
+        sentry_environment: {{ sentry_environment | tojson }},
+        sentry_release:     {{ sentry_release     | tojson }},
       },
     };
   </script>

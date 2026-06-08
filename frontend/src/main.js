@@ -7,6 +7,7 @@ import {
 import { TooltipProvider, TooltipRoot } from 'reka-ui'
 import App from './App.vue'
 import './index.css'
+import { initSentry } from './utils/sentry.js'
 
 // Lower the default tooltip hover delay from reka-ui's 700 ms (and frappe-ui
 // Tooltip's 500 ms) to 300 ms — closer to Google Sheets / Material guidance,
@@ -27,6 +28,11 @@ if (FormControl?.props?.variant) {
 }
 
 const app = createApp(App)
+
+// Optional Sentry — only activates when the deploying site set
+// `spreadsheet_sentry_dsn` in site_config.json (injected via the boot
+// shim in spreadsheet.html). No-op locally.
+initSentry(app)
 
 app.component('Button', Button)
 app.component('Dialog', Dialog)
