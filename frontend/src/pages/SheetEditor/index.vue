@@ -322,6 +322,14 @@
          :class="{ 'sn-painting-format': isPaintingFormat, 'sn-preview-locked': !!vhActive }">
       <canvas ref="canvasRef" />
 
+      <!-- Initial-load shim. The canvas is mounted (so grid.resize / event
+           wiring works) but blank until loadSheet/autoCreate finishes —
+           without this overlay the first paint looks like a deleted sheet
+           for the first 100–500 ms on slow networks. -->
+      <div v-if="isInitialLoad" class="sn-canvas-loading" aria-busy="true">
+        <Spinner class="sn-canvas-loading-spinner" />
+      </div>
+
 <!-- Floating charts (filtered to current sub-sheet by the overlay). -->
       <ChartOverlay
         :charts="chartList"
@@ -2761,10 +2769,20 @@ async function _loadInitialData() {
   }
 }
 
+// Drives the canvas loading overlay (sn-canvas-loading). True until
+// _loadInitialData has either populated the engines from get_sheet or
+// surfaced a load error — flipped in a finally so a thrown exception
+// never strands the editor with a permanent spinner.
+const isInitialLoad = ref(true)
+
 onMounted(async () => {
   _setupGridInstance()
   _setupEventListeners()
-  await _loadInitialData()
+  try {
+    await _loadInitialData()
+  } finally {
+    isInitialLoad.value = false
+  }
 })
 
 onBeforeUnmount(() => {
@@ -4492,6 +4510,19 @@ function toggleShowFormulas() {
 
 /* ── Root layout ─────────────────────────────────────────────────────────── */
 .sn-root { display:flex; flex-direction:column; height:100vh; overflow:hidden; background:var(--surface-white); font-family:InterVar, ui-sans-serif, system-ui, sans-serif; color:var(--ink-gray-9); }
+
+/* ── Canvas loading overlay ──────────────────────────────────────────────── */
+/* Sits inside .sn-grid-wrap. The canvas is mounted underneath (the grid
+   engine needs the canvas ref to wire up before loadSheet returns), so
+   this is a translucent veil that fades when isInitialLoad flips. */
+.sn-canvas-loading {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--surface-white);
+  z-index: 1;
+  pointer-events: none;   /* don't intercept clicks if it lingers a frame */
+}
+.sn-canvas-loading-spinner { color: var(--ink-gray-5); }
 
 /* ── Load-time error state ───────────────────────────────────────────────── */
 .sn-load-error {
