@@ -1212,11 +1212,13 @@ const history = createHistory({
     _applyCellMap(op.before, op.subSheet)
     if (op.beforeFormats)    _applyFormatMap(op.beforeFormats, op.subSheet)
     if (op.beforeValidation) _applyValidationMap(op.beforeValidation, op.subSheet)
+    if (op.beforeMerge)      { merge.restore(op.beforeMerge); grid?.render?.() }
   },
   applyOp(op) {
     _applyCellMap(op.after, op.subSheet)
     if (op.afterFormats)    _applyFormatMap(op.afterFormats, op.subSheet)
     if (op.afterValidation) _applyValidationMap(op.afterValidation, op.subSheet)
+    if (op.afterMerge)      { merge.restore(op.afterMerge); grid?.render?.() }
   },
   getLocalTouches: () => _drainCollabLocalTouches(),
 })
@@ -2331,7 +2333,7 @@ function _runFill(src, total, mode) {
   // shape, which the history's revertOp already round-trips correctly.
   const mergeChanged = JSON.stringify(beforeMergeSnap) !== JSON.stringify(afterMergeSnap)
   const cfChanged    = cfBefore !== cfAfter
-  if (refs.length && !mergeChanged && !cfChanged) {
+  if (refs.length && !cfChanged) {
     history.pushOp({
       opType:    'fill',
       subSheet:  sheetName,
@@ -2339,15 +2341,16 @@ function _runFill(src, total, mode) {
       before:    fillBefore,    after:    fillAfter,
       beforeFormats:    beforeFmt, afterFormats:    afterFmt,
       beforeValidation: beforeVal, afterValidation: afterVal,
+      // Merge restore rides on the same op shape now — revertOp/applyOp
+      // call merge.restore when these are present.
+      ...(mergeChanged ? { beforeMerge: beforeMergeSnap, afterMerge: afterMergeSnap } : {}),
     })
     syncFlags()
     isDirty.value = true
   } else {
-    // Fill touched the merge engine and/or condFormat rules, neither of
-    // which the op shape models. Fall back to a full snapshot — slow but
-    // captures everything. This path still has the snap-after-op edge
-    // case, but only kicks in for fills with merged source cells or
-    // CF rules in scope, which is rare.
+    // Conditional-format rules changed — the op shape doesn't model
+    // rule restore yet, so fall back to a snapshot. Same snap-after-op
+    // edge case applies but only in this narrow path.
     markEdited()
   }
 }
@@ -4160,13 +4163,16 @@ function applyBorder(preset) {
 
 function toggleMerge() {
   if (!grid) return
+  const sn = sheet.getCurrentSheet()
   const { r0, c0, r1, c1 } = grid.getSelection()
   // Resolve the anchor cell to its master — clicking inside the merged
   // region (slave or master) should target the existing merge so the
   // user can unmerge by single-clicking and hitting the toolbar button.
   const anchor   = colLabel(c0) + (r0 + 1)
   const masterId = merge.resolveId(anchor)
-  if (merge.isMaster(masterId)) {
+  const wasMaster   = merge.isMaster(masterId)
+  const beforeMerge = merge.snapshot()
+  if (wasMaster) {
     // Always allow unmerge, even on a 1×1 selection. Use the master's
     // actual span rather than the user's selection — the selection is
     // often just the master cell coords and would miss the slaves.
@@ -4176,7 +4182,29 @@ function toggleMerge() {
     if (r0 === r1 && c0 === c1) return   // nothing to merge in a single cell
     merge.merge(r0, c0, r1, c1)
   }
-  markEdited()
+  const afterMerge = merge.snapshot()
+  // No structural change (rare — defensive) — skip the history entry.
+  if (JSON.stringify(beforeMerge) === JSON.stringify(afterMerge)) {
+    grid.render()
+    return
+  }
+  // Route through op-based history so undo restores the exact previous
+  // merge map. The merge engine's snapshot/restore round-trip is what
+  // revertOp/applyOp call when an op carries beforeMerge/afterMerge.
+  // Cell values aren't affected (merge.merge doesn't clobber them), so
+  // before/after for cell values are intentionally empty maps.
+  const op = {
+    opType:   wasMaster ? 'unmerge' : 'merge',
+    subSheet: sn,
+    cellRefs: [],
+    before:   {},
+    after:    {},
+    beforeMerge, afterMerge,
+    summary:  wasMaster ? 'Unmerged cells' : 'Merged cells',
+  }
+  history.pushOp(op)
+  syncFlags()
+  isDirty.value = true
   grid.render()
 }
 
