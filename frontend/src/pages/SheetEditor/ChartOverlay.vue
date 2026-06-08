@@ -160,7 +160,11 @@ function _onLayerMousedown(e) {
   position: absolute;
   inset: 0;
   pointer-events: none;  /* let canvas receive clicks; charts opt back in */
-  z-index: 10;
+  /* Above .sn-pivot-fab (z-20) and .sn-pivot-highlight (z-15) so a chart
+     dragged on top of a pivot table fully occludes both the pivot's edit
+     fab and its dotted output border — otherwise they punch through the
+     chart card and the visual reads as broken. */
+  z-index: 25;
 }
 .co-host {
   position: absolute;

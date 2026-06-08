@@ -1,5 +1,7 @@
 import { computed, ref } from 'vue'
 import { DEFAULT_CHART_SIZE } from '../../engine/charts.js'
+import { COL_HEADER_H, DEFAULT_ROW_H } from '../../canvas/constants.js'
+import { parseCellId } from '../../utils/cells.js'
 
 /**
  * Wires the chart engine to the SheetEditor surface. Mirrors the
@@ -88,12 +90,12 @@ export function useChartIntegration({
 			// Stagger inserts so they don't perfectly stack.
 			const existing = chart.list().length
 			const offset = (existing % 6) * 24
+			const { x, y } = _defaultPosition(config, offset)
 			chart.add({
 				...config,
 				position: {
 					sheet:  currentSheet.value,
-					x:      40 + offset,
-					y:      40 + offset,
+					x, y,
 					width:  DEFAULT_CHART_SIZE.width,
 					height: DEFAULT_CHART_SIZE.height,
 				},
@@ -101,6 +103,27 @@ export function useChartIntegration({
 		}
 		history.push()
 		isDirty.value = true
+	}
+
+	// Default chart placement. When the source range lives on the SAME sheet
+	// the chart is being inserted into (the common pivot-output case), drop
+	// the chart below the source's last row so it doesn't cover the data
+	// that fed it. Otherwise keep the legacy top-left stagger.
+	function _defaultPosition(config, offset) {
+		let x = 40 + offset
+		let y = 40 + offset
+		const sourceSheet = config.sourceSheet || currentSheet.value
+		if (sourceSheet === currentSheet.value && config.sourceRange) {
+			const endRef = String(config.sourceRange).split(':').pop().trim()
+			const parsed = parseCellId(endRef)
+			if (parsed) {
+				// rows are 0-indexed; +1 to reach BOTTOM of that row, *DEFAULT_ROW_H
+				// is a heuristic (custom row heights aren't read here — that would
+				// require canvas geometry access) and good enough for a default.
+				y = COL_HEADER_H + (parsed.r + 1) * DEFAULT_ROW_H + 16 + offset
+			}
+		}
+		return { x, y }
 	}
 
 	function onChartDelete(id) {
