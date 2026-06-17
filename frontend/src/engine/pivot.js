@@ -37,23 +37,32 @@ function _keyParts(key) { return key.split('\x00') }
 // ── Pivot computation (pure) ─────────────────────────────────────────────────
 
 export function computePivot(config, getRangeValues) {
+  return computePivotModel(config, getRangeValues)?.table ?? []
+}
+
+// Like computePivot but returns the full intermediate model alongside the
+// rendered table: { table, headers, dataRows, rowIdxs, colIdxs, valCols,
+// rowKeyList, colKeyList, hasColFields }. Drill-down needs the keys + source
+// rows to map an output cell back to the rows that fed it. Returns null when
+// there's nothing to pivot. computePivot() is a thin wrapper over this.
+export function computePivotModel(config, getRangeValues) {
   const { sourceSheet, sourceRange, rows, cols, values } = config
-  if (!sourceRange || !rows.length || !values.length) return []
+  if (!sourceRange || !rows.length || !values.length) return null
 
   const [start, end] = sourceRange.includes(':') ? sourceRange.split(':') : [sourceRange, sourceRange]
   const data = getRangeValues(start, end, sourceSheet)
-  if (!data || data.length < 2) return []
+  if (!data || data.length < 2) return null
 
   const headers = data[0].map(h => String(h ?? ''))
   const dataRows = data.slice(1).filter(r => r.some(v => v !== null && v !== undefined && v !== ''))
-  if (!dataRows.length) return []
+  if (!dataRows.length) return null
 
   const rowIdxs = rows.map(f => headers.indexOf(f)).filter(i => i >= 0)
   const colIdxs = (cols || []).map(f => headers.indexOf(f)).filter(i => i >= 0)
   const valCols = values
     .map(v => ({ idx: headers.indexOf(v.field), agg: v.agg || 'sum', field: v.field }))
     .filter(v => v.idx >= 0)
-  if (!valCols.length || !rowIdxs.length) return []
+  if (!valCols.length || !rowIdxs.length) return null
 
   // Collect ordered unique row/col keys
   const rowKeyList = [], colKeyList = []
@@ -159,7 +168,45 @@ export function computePivot(config, getRangeValues) {
   }
   table.push(totalRow)
 
-  return table
+  return { table, headers, dataRows, rowIdxs, colIdxs, valCols, rowKeyList, colKeyList, hasColFields }
+}
+
+// Map a clicked pivot output cell (r, c) back to the source rows that feed it.
+// Returns { headers, rows } (rows = matching source data rows) or null if the
+// cell isn't a drillable value/total/row-label cell. Which rows belong to a
+// group depends only on the row-key ∩ col-key — not on which value field is
+// aggregated — so we match on those two and ignore the value index.
+export function pivotDrillDown(model, r, c) {
+  if (!model) return null
+  const { headers, dataRows, rowIdxs, colIdxs, valCols, rowKeyList, colKeyList, hasColFields } = model
+  const nRowFields = rowIdxs.length
+  const nData = rowKeyList.length
+
+  // Row 0 is the header; rows 1..nData are groups; the last row is the grand
+  // total (rk = null → every row group).
+  if (r < 1 || r > nData + 1) return null
+  const rk = r === nData + 1 ? null : rowKeyList[r - 1]
+
+  let ck = null            // null → every column group
+  let drillable = false
+  if (c < nRowFields) {
+    drillable = true                                 // row-label cell → whole row group
+  } else if (hasColFields) {
+    const cp = c - nRowFields
+    const groupCount = colKeyList.length * valCols.length
+    if (cp < groupCount) { ck = colKeyList[Math.floor(cp / valCols.length)]; drillable = true }
+    else if (cp < groupCount + valCols.length) drillable = true   // totals block → all columns
+  } else {
+    const cp = c - nRowFields
+    const width = valCols.length + (valCols.length > 1 ? 1 : 0)   // +1 for the multi-value grand total
+    if (cp >= 0 && cp < width) drillable = true
+  }
+  if (!drillable) return null
+
+  const rows = dataRows.filter(row =>
+    (rk === null || _makeKey(row, rowIdxs) === rk) &&
+    (ck === null || _makeKey(row, colIdxs) === ck))
+  return { headers, rows }
 }
 
 // ── Write pivot output to sheet ──────────────────────────────────────────────

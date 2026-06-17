@@ -1,5 +1,5 @@
 import { ref, computed, watch } from 'vue'
-import { computePivot, writePivotToSheet } from '../../engine/pivot.js'
+import { computePivot, computePivotModel, pivotDrillDown, writePivotToSheet } from '../../engine/pivot.js'
 import { colLabel, cellId } from '../../utils/cells.js'
 import { COL_HEADER_H, ROW_HEADER_W } from '../../canvas/constants.js'
 
@@ -218,6 +218,42 @@ export function usePivotIntegration({
     }
   }
 
+  // Double-click drill-down: given a cell (r, c) on the current pivot output
+  // sheet, open the underlying source rows in a fresh sheet (Google Sheets
+  // behaviour). Returns true when it handled the cell so the grid skips the
+  // cell editor; false for non-pivot sheets or non-drillable cells.
+  function drillDownAt(r, c) {
+    const cfg = activePivotConfig.value
+    if (!cfg) return false
+    const model = computePivotModel(cfg, (s, e, sh) => sheet.getRangeValues(s, e, sh))
+    const res = pivotDrillDown(model, r, c)
+    if (!res || !res.rows.length) return false
+
+    const existing = sheet.getSheetNames()
+    let name = 'Drill-down'; let n = 2
+    while (existing.includes(name)) name = `Drill-down ${n++}`
+    sheet.addSheet(name)
+    syncNames()
+
+    const table = [res.headers, ...res.rows]
+    for (let rr = 0; rr < table.length; rr++) {
+      const tr = table[rr]
+      for (let cc = 0; cc < tr.length; cc++) {
+        const v = tr[cc]
+        if (v === null || v === undefined || v === '') continue
+        sheet.setCell(cellId(rr, cc), typeof v === 'number' ? v : String(v), name)
+      }
+    }
+    if (formats?.set) {
+      for (let cc = 0; cc < res.headers.length; cc++) formats.set(cellId(0, cc), { bold: true }, name)
+    }
+
+    switchSheet(name)
+    repopulateGrid()
+    history.push(); isDirty.value = true
+    return true
+  }
+
   function recomputePivotsForSheet(srcSheet) {
     if (!pivot.affectsPivot(srcSheet)) return
     for (const cfg of pivot.list()) {
@@ -253,6 +289,6 @@ export function usePivotIntegration({
     pivotDialogOpen, pivotInitialRange, pivotEditId, pivotEditConfig, pivotVersion,
     activePivotConfig, pivotFabStyle, pivotHighlightStyle, pivotBannerMenuOptions,
     isPivotSheet, openPivotDialog, onPivotEdit, onPivotRefresh, onPivotDelete, onPivotConfirm,
-    recomputePivotsForSheet,
+    recomputePivotsForSheet, drillDownAt,
   }
 }

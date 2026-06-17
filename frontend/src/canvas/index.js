@@ -9,7 +9,7 @@ import { CHIP, chipMetrics } from './chip-geometry.js'
 
 export { colLabel, cellId, parseCellId } from '../utils/cells.js'
 
-export function createGrid(canvas, { onSelect, onCommit, onInput, onCancel, getFormat, onFill, onBatchCommit, getMergeInfo, isSlave, getMasterId, getComment, getValidation, getCondFormat, getRightInset, onHyperlinkClick, onDropdownClick, onResizeEnd, getSheetNames, getCurrentSheet, getEditingHomeSheet } = {}) {
+export function createGrid(canvas, { onSelect, onCommit, onInput, onCancel, getFormat, onFill, onBatchCommit, getMergeInfo, isSlave, getMasterId, getComment, getValidation, getCondFormat, getRightInset, onHyperlinkClick, onDropdownClick, onPivotDrill, onResizeEnd, getSheetNames, getCurrentSheet, getEditingHomeSheet } = {}) {
   const ctx = canvas.getContext('2d')
   const dpr = window.devicePixelRatio || 1
 
@@ -1080,6 +1080,10 @@ export function createGrid(canvas, { onSelect, onCommit, onInput, onCancel, getF
 
     const h = geo.hitTest(e.clientX, e.clientY, rect)
     if (!h) return
+    // On a pivot output sheet, a double-click drills into the source rows
+    // instead of editing the (regenerated) cell. The handler returns true
+    // when it took over.
+    if (onPivotDrill?.(h.r, h.c)) return
     showEditor(data[cellId(h.r, h.c)] ?? '', 'edit')
   })
 

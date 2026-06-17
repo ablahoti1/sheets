@@ -2013,7 +2013,7 @@ const {
   pivotDialogOpen, pivotInitialRange, pivotEditId, pivotEditConfig, pivotVersion,
   activePivotConfig, pivotFabStyle, pivotHighlightStyle, pivotBannerMenuOptions,
   isPivotSheet, openPivotDialog, onPivotEdit, onPivotRefresh, onPivotDelete, onPivotConfirm,
-  recomputePivotsForSheet,
+  recomputePivotsForSheet, drillDownAt,
 } = usePivotIntegration({
   pivot, sheet, formats, currentSheet, renderVersion,
   getGrid: () => grid,
@@ -2690,6 +2690,7 @@ function _setupGridInstance() {
     },
     onHyperlinkClick(url) { window.open(url, '_blank', 'noopener,noreferrer') },
     onDropdownClick(id, rule, pos) { openDropdown(id, rule, pos) },
+    onPivotDrill(r, c) { return drillDownAt(r, c) },
     getSheetNames() { return sheetNames.value },
     // Cross-sheet picker — grid prefixes inserted refs with the current sheet
     // when it differs from the edit's home sheet. Home is null outside of an
