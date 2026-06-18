@@ -201,20 +201,28 @@
           <Button :variant="open ? 'subtle' : 'ghost'" size="sm" :icon="hAlignIcon" tooltip="Alignment" />
         </template>
       </Dropdown>
-      <Tooltip text="Text colour">
-        <label class="sn-swatch-btn">
-          <FeatherIcon name="type" class="sn-swatch-glyph" />
-          <span class="sn-swatch-underline" :style="{ background: activeFormat.color || '#171717' }"></span>
-          <input name="text-color" type="color" title="" :value="activeFormat.color || '#171717'" @input="setColor('color', $event.target.value)" />
-        </label>
-      </Tooltip>
-      <Tooltip text="Fill colour">
-        <label class="sn-swatch-btn">
-          <FeatherIcon name="droplet" class="sn-swatch-glyph" />
-          <span class="sn-swatch-underline sn-swatch-fill" :style="{ background: activeFormat.backgroundColor || '#ffffff' }"></span>
-          <input name="fill-color" type="color" title="" :value="activeFormat.backgroundColor || '#ffffff'" @input="setColor('backgroundColor', $event.target.value)" />
-        </label>
-      </Tooltip>
+      <ColorPicker :model-value="activeFormat.color || ''" allow-default default-label="Default text color"
+                   title="Text colour" fallback="#171717" @update:model-value="setColor('color', $event)">
+        <template #trigger="{ toggle, open }">
+          <Tooltip text="Text colour">
+            <button type="button" class="sn-swatch-btn" :class="{ 'is-open': open }" @click="toggle()">
+              <FeatherIcon name="type" class="sn-swatch-glyph" />
+              <span class="sn-swatch-underline" :style="{ background: activeFormat.color || '#171717' }"></span>
+            </button>
+          </Tooltip>
+        </template>
+      </ColorPicker>
+      <ColorPicker :model-value="activeFormat.backgroundColor || ''" allow-default default-label="No fill"
+                   title="Fill colour" fallback="#ffffff" @update:model-value="setColor('backgroundColor', $event)">
+        <template #trigger="{ toggle, open }">
+          <Tooltip text="Fill colour">
+            <button type="button" class="sn-swatch-btn" :class="{ 'is-open': open }" @click="toggle()">
+              <FeatherIcon name="droplet" class="sn-swatch-glyph" />
+              <span class="sn-swatch-underline sn-swatch-fill" :style="{ background: activeFormat.backgroundColor || '#ffffff' }"></span>
+            </button>
+          </Tooltip>
+        </template>
+      </ColorPicker>
 
       <div class="sn-vr" />
 
@@ -968,16 +976,22 @@
             <FormControl v-if="cfDialog.condType === 'between'"
                          v-model="cfDialog.condValue2" label="And" placeholder="e.g. 100" />
             <div class="sn-cf-fmt">
-              <label class="sn-swatch-btn" title="Text colour">
-                <FeatherIcon name="type" class="sn-swatch-glyph" />
-                <span class="sn-swatch-underline" :style="{ background: cfDialog.fmtColor || '#171717' }"></span>
-                <input name="cf-text-color" type="color" :value="cfDialog.fmtColor || '#171717'" @input="cfDialog.fmtColor = $event.target.value" />
-              </label>
-              <label class="sn-swatch-btn" title="Fill colour">
-                <FeatherIcon name="droplet" class="sn-swatch-glyph" />
-                <span class="sn-swatch-underline sn-swatch-fill" :style="{ background: cfDialog.fmtBg || '#ffffff' }"></span>
-                <input name="cf-fill-color" type="color" :value="cfDialog.fmtBg || '#ffffff'" @input="cfDialog.fmtBg = $event.target.value" />
-              </label>
+              <ColorPicker v-model="cfDialog.fmtColor" allow-default default-label="Automatic" title="Text colour" fallback="#171717">
+                <template #trigger="{ toggle, open }">
+                  <button type="button" class="sn-swatch-btn" :class="{ 'is-open': open }" title="Text colour" @click="toggle()">
+                    <FeatherIcon name="type" class="sn-swatch-glyph" />
+                    <span class="sn-swatch-underline" :style="{ background: cfDialog.fmtColor || '#171717' }"></span>
+                  </button>
+                </template>
+              </ColorPicker>
+              <ColorPicker v-model="cfDialog.fmtBg" allow-default default-label="No fill" title="Fill colour" fallback="#ffffff">
+                <template #trigger="{ toggle, open }">
+                  <button type="button" class="sn-swatch-btn" :class="{ 'is-open': open }" title="Fill colour" @click="toggle()">
+                    <FeatherIcon name="droplet" class="sn-swatch-glyph" />
+                    <span class="sn-swatch-underline sn-swatch-fill" :style="{ background: cfDialog.fmtBg || '#ffffff' }"></span>
+                  </button>
+                </template>
+              </ColorPicker>
               <span class="sn-cf-fmt-label">Apply to range: {{ cfRangeLabel }}</span>
             </div>
           </template>
@@ -986,18 +1000,18 @@
           <template v-else-if="cfDialog.kind === 'color-scale'">
             <FormControl type="select" label="Variant" v-model="cfDialog.scaleVariant" :options="CF_SCALE_VARIANT_OPTIONS" />
             <div class="sn-cf-scale">
-              <label class="sn-cf-stop">
+              <div class="sn-cf-stop">
                 <span>Min</span>
-                <input name="cf-scale-min" type="color" v-model="cfDialog.scaleMin" />
-              </label>
-              <label v-if="cfDialog.scaleVariant === '3color'" class="sn-cf-stop">
+                <ColorPicker v-model="cfDialog.scaleMin" title="Min colour" :fallback="cfDialog.scaleMin" />
+              </div>
+              <div v-if="cfDialog.scaleVariant === '3color'" class="sn-cf-stop">
                 <span>Mid</span>
-                <input name="cf-scale-mid" type="color" v-model="cfDialog.scaleMid" />
-              </label>
-              <label class="sn-cf-stop">
+                <ColorPicker v-model="cfDialog.scaleMid" title="Mid colour" :fallback="cfDialog.scaleMid" />
+              </div>
+              <div class="sn-cf-stop">
                 <span>Max</span>
-                <input name="cf-scale-max" type="color" v-model="cfDialog.scaleMax" />
-              </label>
+                <ColorPicker v-model="cfDialog.scaleMax" title="Max colour" :fallback="cfDialog.scaleMax" />
+              </div>
             </div>
             <div
               class="sn-cf-scale-preview"
@@ -1010,10 +1024,10 @@
 
           <!-- Data bars: horizontal bar inside each cell, proportional to value. -->
           <template v-else-if="cfDialog.kind === 'data-bar'">
-            <label class="sn-cf-stop">
+            <div class="sn-cf-stop">
               <span>Bar colour</span>
-              <input name="cf-bar-color" type="color" v-model="cfDialog.barColor" />
-            </label>
+              <ColorPicker v-model="cfDialog.barColor" title="Bar colour" :fallback="cfDialog.barColor" />
+            </div>
             <div class="sn-cf-bar-preview">
               <div class="sn-cf-bar-row" v-for="t in [0.25, 0.5, 0.85]" :key="t">
                 <div class="sn-cf-bar-fill" :style="{ width: (t * 100) + '%', background: cfDialog.barColor }" />
@@ -1083,6 +1097,7 @@ import CellHistoryPopover      from './CellHistoryPopover.vue'
 import SplitTextPopover        from './SplitTextPopover.vue'
 import ShareDialog             from './ShareDialog.vue'
 import PivotDialog             from './PivotDialog.vue'
+import ColorPicker             from './ColorPicker.vue'
 import { createPivotEngine } from '../../engine/pivot.js'
 import { createChartEngine } from '../../engine/charts.js'
 import { useChartIntegration } from './useChartIntegration.js'
@@ -4592,15 +4607,14 @@ function toggleShowFormulas() {
 /* Hairline between action buttons and avatar — groups the cluster without
    relying on extra padding. */
 .sn-topbar-divider { width:1px; height:20px; background:var(--outline-gray-2); margin:0 4px; flex-shrink:0; }
-/* Notes count badge — workbook-wide, shares the comment-triangle red so the
-   topbar signal and the per-cell markers read as one system. */
+/* Notes count badge — workbook-wide teal badge on the notes icon. */
 .sn-notes-btn-wrap { position:relative; display:inline-flex; }
 .sn-notes-badge {
   position:absolute; top:-3px; right:-3px; box-sizing:border-box;
   min-width:15px; height:15px; padding:0 3px;
   display:flex; align-items:center; justify-content:center;
   font-size:9px; font-weight:600; line-height:1; color:#fff;
-  background:#E8523A; border-radius:999px; border:1.5px solid var(--surface-white);
+  background:#0d7490; border-radius:999px; border:1.5px solid var(--surface-white);
   pointer-events:none;
 }
 
@@ -4729,10 +4743,10 @@ function toggleShowFormulas() {
   .sn-tool-more  { display: inline-flex; }
 }
 
-/* Color-picker swatch buttons (FeatherIcon glyph above a colored underline). Native <input type=color> kept; Frappe UI has no color picker. */
-.sn-swatch-btn { position:relative; height:28px; width:28px; border-radius:6px; display:inline-flex; flex-direction:column; align-items:center; justify-content:center; cursor:pointer; border:1px solid transparent; gap:1px; transition:background-color .12s; }
-.sn-swatch-btn:hover { background:var(--surface-gray-3); }
-.sn-swatch-btn input[type=color] { position:absolute; opacity:0; width:100%; height:100%; left:0; top:0; cursor:pointer; }
+/* Color-picker trigger buttons (FeatherIcon glyph above a colored underline).
+   These open the ColorPicker popover; the swatch grid + hex + custom live there. */
+.sn-swatch-btn { position:relative; height:28px; width:28px; border-radius:6px; display:inline-flex; flex-direction:column; align-items:center; justify-content:center; cursor:pointer; border:1px solid transparent; gap:1px; transition:background-color .12s; background:transparent; padding:0; }
+.sn-swatch-btn:hover, .sn-swatch-btn.is-open { background:var(--surface-gray-3); }
 .sn-swatch-glyph     { width:14px; height:14px; color:var(--ink-gray-8); pointer-events:none; }
 .sn-merge-glyph      { width:16px; height:16px; color:currentColor; pointer-events:none; }
 .sn-swatch-underline { width:16px; height:3px; border-radius:1px; pointer-events:none; }
