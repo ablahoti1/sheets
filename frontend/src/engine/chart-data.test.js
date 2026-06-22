@@ -80,6 +80,19 @@ describe('buildOption — line chart', () => {
 		const opt = buildOption(cfg({ chartType: 'line', options: { smooth: true } }), MATRIX)
 		expect(opt.series[0].smooth).toBe(true)
 	})
+
+	it('enables LTTB downsampling so big line series stay fast to render', () => {
+		const opt = buildOption(cfg({ chartType: 'line' }), MATRIX)
+		expect(opt.series[0].sampling).toBe('lttb')
+	})
+})
+
+describe('buildOption — big-data rendering', () => {
+	it('turns on large-mode for scatter and bar, not for line', () => {
+		expect(buildOption(cfg({ chartType: 'scatter' }), MATRIX).series[0].large).toBe(true)
+		expect(buildOption(cfg({ chartType: 'bar' }), MATRIX).series[0].large).toBe(true)
+		expect(buildOption(cfg({ chartType: 'line' }), MATRIX).series[0].large).toBeUndefined()
+	})
 })
 
 describe('buildOption — area chart', () => {

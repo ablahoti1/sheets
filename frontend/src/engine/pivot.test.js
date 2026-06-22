@@ -94,3 +94,47 @@ describe('pivotDrillDown — with column fields', () => {
     expect(pivotDrillDown(model, last, 3).rows).toHaveLength(3)
   })
 })
+
+// ── async (block-reading) parity + cancellation ───────────────────────────────
+
+import { computePivotModelAsync } from './pivot.js'
+
+// Range-aware stub: slices the 2D `data` by the requested A1:B2 rectangle, so
+// the block reader sees the real rows for each block (the `ranged` stub above
+// ignores the range and would hand back the header on every block).
+function slicer(data) {
+  const at = s => {
+    const m = s.match(/^([A-Z]+)(\d+)$/)
+    let col = 0
+    for (const ch of m[1]) col = col * 26 + (ch.charCodeAt(0) - 64)
+    return { col: col - 1, row: +m[2] - 1 }
+  }
+  return (start, end) => {
+    const a = at(start), b = at(end)
+    const out = []
+    for (let r = a.row; r <= b.row; r++) out.push((data[r] || []).slice(a.col, b.col + 1))
+    return out
+  }
+}
+
+describe('computePivotModelAsync', () => {
+  const data = [
+    ['region', 'year', 'sales'],
+    ['North', '2022', 10],
+    ['North', '2023', 20],
+    ['South', '2022', 5],
+    ['South', '2023', 7],
+  ]
+  const config = { sourceSheet: 'S', sourceRange: 'A1:C5', rows: ['region'], cols: ['year'], values: [{ field: 'sales', agg: 'sum' }] }
+
+  it('matches the sync table, even with a tiny block size forcing many yields', async () => {
+    const sync = computePivotModel(config, ranged(data))
+    const model = await computePivotModelAsync(config, slicer(data), { blockRows: 1 })
+    expect(model.table).toEqual(sync.table)
+  })
+
+  it('bails out when onYield reports it was superseded', async () => {
+    const model = await computePivotModelAsync(config, slicer(data), { blockRows: 1, onYield: () => false })
+    expect(model).toBeNull()
+  })
+})

@@ -120,21 +120,21 @@ describe('onPivotDelete', () => {
 // ── onPivotConfirm — create ───────────────────────────────────────────────────
 
 describe('onPivotConfirm — create', () => {
-  it('adds a new pivot, creates output sheet, calls switchSheet', () => {
+  it('adds a new pivot, creates output sheet, calls switchSheet', async () => {
     const { deps, pivot } = makeDeps()
     const { onPivotConfirm } = usePivotIntegration(deps)
-    onPivotConfirm({ rows: ['Region'], cols: [], values: [{ field: 'Sales', agg: 'sum' }] })
+    await onPivotConfirm({ rows: ['Region'], cols: [], values: [{ field: 'Sales', agg: 'sum' }] })
     expect(pivot.list()).toHaveLength(1)
     expect(deps.switchSheet).toHaveBeenCalledWith('Pivot – Region')
     expect(deps.history.push).toHaveBeenCalled()
     expect(deps.isDirty.value).toBe(true)
   })
 
-  it('generates unique sheet name when base name is taken', () => {
+  it('generates unique sheet name when base name is taken', async () => {
     const { deps, pivot } = makeDeps()
     deps.sheet.addSheet('Pivot – Region')
     const { onPivotConfirm } = usePivotIntegration(deps)
-    onPivotConfirm({ rows: ['Region'], cols: [], values: [] })
+    await onPivotConfirm({ rows: ['Region'], cols: [], values: [] })
     expect(deps.switchSheet).toHaveBeenCalledWith('Pivot – Region 2')
   })
 })
@@ -142,13 +142,13 @@ describe('onPivotConfirm — create', () => {
 // ── onPivotConfirm — edit ────────────────────────────────────────────────────
 
 describe('onPivotConfirm — edit', () => {
-  it('updates existing pivot config and reuses output sheet', () => {
+  it('updates existing pivot config and reuses output sheet', async () => {
     const { deps, pivot, currentSheet } = makeDeps()
     pivot.add({ outputSheet: 'PivotOut', sourceSheet: 'Sheet1', rows: ['A'], cols: [], values: [] })
     const id = pivot.list()[0].id
     currentSheet.value = 'PivotOut'
     const { onPivotConfirm } = usePivotIntegration(deps)
-    onPivotConfirm({ id, rows: ['B'], cols: [], values: [], sourceSheet: 'Sheet1' })
+    await onPivotConfirm({ id, rows: ['B'], cols: [], values: [], sourceSheet: 'Sheet1' })
     expect(pivot.get(id).rows).toEqual(['B'])
     expect(deps.switchSheet).toHaveBeenCalledWith('PivotOut')
   })

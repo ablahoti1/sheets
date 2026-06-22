@@ -1,6 +1,6 @@
 import { ref, computed, watch } from 'vue'
-import { computePivot, computePivotModel, pivotDrillDown, writePivotToSheet } from '../../engine/pivot.js'
-import { colLabel, cellId } from '../../utils/cells.js'
+import { computePivotModel, computePivotModelAsync, pivotDrillDown, writePivotToSheet } from '../../engine/pivot.js'
+import { colLabel, cellId, parseCellId } from '../../utils/cells.js'
 import { COL_HEADER_H, ROW_HEADER_W } from '../../canvas/constants.js'
 
 // Styling applied to the pivot's column header row (row 0) and Grand Total
@@ -32,6 +32,9 @@ export function usePivotIntegration({
   const pivotEditId       = ref('')
   const pivotEditConfig   = ref(null)
   const pivotVersion      = ref(0)
+  // True while an async pivot build is aggregating the source rows — drives a
+  // spinner so big sheets don't look frozen.
+  const pivotBuilding     = ref(false)
   // Row/column count of the last-rendered pivot output; used to position the
   // edit FAB and the highlight overlay without re-running the full
   // computePivot() on every canvas render frame.
@@ -77,10 +80,13 @@ export function usePivotIntegration({
       _pivotColCount.value = 0
       return
     }
-    const table = computePivot(cfg, (s, e, sh) => sheet.getRangeValues(s, e, sh))
-    _pivotRowCount.value = table.length
-    _pivotColCount.value = table[0]?.length || 0
-    _styleHeaderAndTotal(table, cfg.outputSheet)
+    // Derive dimensions from the already-written output sheet rather than
+    // re-running the aggregation just for row/col counts — that re-pivoted
+    // every source row (100k+) on every page load / sheet switch.
+    const { rows, cols } = _outputExtent(cfg.outputSheet)
+    _pivotRowCount.value = rows
+    _pivotColCount.value = cols
+    _restyleHeaderAndTotal(cfg.outputSheet, rows, cols)
   }, { immediate: true })
 
   // Positions the edit FAB below the Grand Total row without re-running
@@ -166,10 +172,10 @@ export function usePivotIntegration({
     pivotDialogOpen.value   = true
   }
 
-  function onPivotRefresh() {
+  async function onPivotRefresh() {
     const cfg = activePivotConfig.value
     if (!cfg) return
-    _applyPivotOutput(cfg)
+    await _applyPivotOutput(cfg)
     repopulateGrid()
   }
 
@@ -189,16 +195,63 @@ export function usePivotIntegration({
     }
   }
 
-  function _applyPivotOutput(config) {
-    const table = computePivot(config, (s, e, sh) => sheet.getRangeValues(s, e, sh))
-    _pivotRowCount.value = table.length
-    _pivotColCount.value = table[0]?.length || 0
-    writePivotToSheet(
-      table, config.outputSheet,
-      (id, val, sh) => sheet.setCell(id, val, sh),
-      shName => _clearPivotOutputSheet(shName),
-    )
-    _styleHeaderAndTotal(table, config.outputSheet)
+  // Async, chunked build. Aggregates the source in row blocks, yielding between
+  // them so a 100k-row pivot doesn't freeze the UI. A newer build supersedes an
+  // in-flight one via the token (e.g. rapid edits / refresh).
+  let _buildToken = 0
+  async function _applyPivotOutput(config) {
+    const token = ++_buildToken
+    pivotBuilding.value = true
+    try {
+      const model = await computePivotModelAsync(
+        config,
+        (s, e, sh) => sheet.getRangeValues(s, e, sh),
+        { onYield: () => _yieldUnlessSuperseded(token) },
+      )
+      if (token !== _buildToken) return
+      const table = model?.table ?? []
+      _pivotRowCount.value = table.length
+      _pivotColCount.value = table[0]?.length || 0
+      writePivotToSheet(
+        table, config.outputSheet,
+        (id, val, sh) => sheet.setCell(id, val, sh),
+        shName => _clearPivotOutputSheet(shName),
+      )
+      _styleHeaderAndTotal(table, config.outputSheet)
+    } finally {
+      if (token === _buildToken) pivotBuilding.value = false
+    }
+  }
+
+  // Yield a macrotask so the UI can paint/respond between blocks; resolves
+  // false when a newer build has taken over so the engine bails early.
+  function _yieldUnlessSuperseded(token) {
+    return new Promise(res => setTimeout(() => res(token === _buildToken), 0))
+  }
+
+  // Row/col extent of an already-written sheet (pivot output is small/grouped),
+  // used to size overlays without re-aggregating the source.
+  function _outputExtent(sheetName) {
+    const data = sheet.getRawData(sheetName)
+    let maxR = -1, maxC = -1
+    for (const id of Object.keys(data)) {
+      const p = parseCellId(id)
+      if (!p) continue
+      if (p.row > maxR) maxR = p.row
+      if (p.col > maxC) maxC = p.col
+    }
+    return { rows: maxR + 1, cols: maxC + 1 }
+  }
+
+  // Re-apply header/total banding from an extent (used on load so pivots made
+  // before this styling existed pick it up, without recomputing the table).
+  function _restyleHeaderAndTotal(outputSheet, rows, cols) {
+    if (!formats?.set || rows <= 0 || cols <= 0) return
+    const lastRow = rows - 1
+    for (let c = 0; c < cols; c++) {
+      formats.set(cellId(0, c), PIVOT_HEADER_FORMAT, outputSheet)
+      if (lastRow > 0) formats.set(cellId(lastRow, c), PIVOT_HEADER_FORMAT, outputSheet)
+    }
   }
 
   // Apply the bold + #d9e0e8 banding to row 0 (column headers) and the last
@@ -254,39 +307,40 @@ export function usePivotIntegration({
     return true
   }
 
-  function recomputePivotsForSheet(srcSheet) {
+  async function recomputePivotsForSheet(srcSheet) {
     if (!pivot.affectsPivot(srcSheet)) return
     for (const cfg of pivot.list()) {
-      if (cfg.sourceSheet === srcSheet) _applyPivotOutput(cfg)
+      if (cfg.sourceSheet === srcSheet) await _applyPivotOutput(cfg)
     }
     repopulateGrid()
   }
 
-  function onPivotConfirm(config) {
+  async function onPivotConfirm(config) {
     const existing = sheet.getSheetNames()
+    let outputSheet
     if (config.id) {
       const old = pivot.get(config.id)
-      const outputSheet = old?.outputSheet || `Pivot – ${config.rows.join(', ')}`
+      outputSheet = old?.outputSheet || `Pivot – ${config.rows.join(', ')}`
       pivot.update(config.id, { ...config, outputSheet })
-      _applyPivotOutput({ ...config, outputSheet })
-      switchSheet(outputSheet)
     } else {
       const baseName = `Pivot – ${config.rows.join(', ')}`
-      let outputSheet = baseName; let n = 2
+      outputSheet = baseName; let n = 2
       while (existing.includes(outputSheet)) outputSheet = `${baseName} ${n++}`
       sheet.addSheet(outputSheet)
       syncNames()
       config.outputSheet = outputSheet
       pivot.add(config)
-      _applyPivotOutput({ ...config, outputSheet })
-      switchSheet(outputSheet)
     }
+    // Switch first so the user sees the output sheet (with a spinner) while it
+    // builds, then fill it in.
+    switchSheet(outputSheet)
+    await _applyPivotOutput({ ...config, outputSheet })
     repopulateGrid()
     history.push(); isDirty.value = true
   }
 
   return {
-    pivotDialogOpen, pivotInitialRange, pivotEditId, pivotEditConfig, pivotVersion,
+    pivotDialogOpen, pivotInitialRange, pivotEditId, pivotEditConfig, pivotVersion, pivotBuilding,
     activePivotConfig, pivotFabStyle, pivotHighlightStyle, pivotBannerMenuOptions,
     isPivotSheet, openPivotDialog, onPivotEdit, onPivotRefresh, onPivotDelete, onPivotConfirm,
     recomputePivotsForSheet, drillDownAt,
