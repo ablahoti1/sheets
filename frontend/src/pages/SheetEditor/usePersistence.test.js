@@ -30,7 +30,9 @@ const stubEngine = (name) => ({
 const _ref = (v) => ({ value: v })
 
 function setup() {
-  const sheet      = stubEngine('sheet')
+  // The save path packs the sheet straight from live cell data
+  // (getAllRaw + getCurrentSheet) instead of snapshot()'s deepClone.
+  const sheet      = { ...stubEngine('sheet'), getAllRaw: () => ({ Sheet1: {} }), getCurrentSheet: () => 'Sheet1' }
   const formats    = stubEngine('formats')
   const merge      = stubEngine('merge')
   const comments   = stubEngine('comments')

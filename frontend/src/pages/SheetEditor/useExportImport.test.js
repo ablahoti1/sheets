@@ -39,7 +39,7 @@ function makeComposable(sheetData = {}) {
   const grid           = makeGrid()
   const ops            = []
   const isDirty        = ref(false)
-  const history        = { push: vi.fn() }
+  const syncFlags      = vi.fn()
   const repopulateGrid = vi.fn()
 
   const ctx = useExportImport({
@@ -47,14 +47,12 @@ function makeComposable(sheetData = {}) {
     getCurrentTitle: () => 'Test Sheet',
     getGrid:         () => grid,
     queueOp:         op => ops.push(op),
-    markEdited:      vi.fn(),
     repopulateGrid,
-    syncFlags:       vi.fn(),
+    syncFlags,
     isDirty,
-    history,
   })
 
-  return { ...ctx, sheet, grid, ops, isDirty, history, repopulateGrid }
+  return { ...ctx, sheet, grid, ops, isDirty, syncFlags, repopulateGrid }
 }
 
 // ── _parseCSV ─────────────────────────────────────────────────────────────────
@@ -234,9 +232,11 @@ describe('importCSV', () => {
     expect(isDirty.value).toBe(true)
   })
 
-  it('pushes a history snapshot', async () => {
-    const { history } = await runImport('x,y')
-    expect(history.push).toHaveBeenCalledTimes(1)
+  it('marks dirty and refreshes toolbar flags without a history snapshot', async () => {
+    // Imports aren't undoable (Sheets parity) and a full-workbook snapshot
+    // here was a multi-second deepClone on large files — see _ingestRows.
+    const { syncFlags } = await runImport('x,y')
+    expect(syncFlags).toHaveBeenCalled()
   })
 
   it('does not queue an undo op — imports are non-undoable (Sheets parity)', async () => {
