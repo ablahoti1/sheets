@@ -83,6 +83,19 @@
         </template>
       </div>
       <div class="sn-topbar-right">
+        <!-- AI Assist entry point — shown only when an admin has configured a
+             key and enabled it (gated server-side via the boot flag). -->
+        <template v-if="aiEnabled">
+          <Button
+            variant="ghost"
+            size="sm"
+            icon="lucide-sparkles"
+            label="Ask AI"
+            tooltip="Ask AI to work on your selection"
+            @click="openAskBar"
+          />
+          <span class="sn-topbar-divider" aria-hidden="true" />
+        </template>
         <Dropdown :options="fileDropdownOptions" placement="right">
           <template #default="{ open }">
             <Button :variant="open ? 'subtle' : 'ghost'" size="sm" iconLeft="file-text" iconRight="chevron-down" label="File" tooltip="Import / export" />
@@ -341,11 +354,18 @@
         <Spinner class="sn-canvas-loading-spinner" />
       </div>
 
+<!-- Non-blocking spinner while a large pivot aggregates in the background. -->
+      <div v-if="pivotBuilding" class="sn-pivot-building" aria-busy="true">
+        <Spinner class="sn-canvas-loading-spinner" />
+        <span>Building pivot…</span>
+      </div>
+
 <!-- Floating charts (filtered to current sub-sheet by the overlay). -->
       <ChartOverlay
         :charts="chartList"
         :current-sheet="currentSheet"
         :get-matrix="getChartMatrix"
+        :data-version="chartDataVersion"
         :selected-id="selectedChartId"
         :suppressed="chartDialogOpen"
         @select="selectChart"
@@ -571,6 +591,9 @@
 
     <!-- Bottom · sheet tabs + selection stats -->
     <div class="sn-bottom">
+      <!-- Pinned outside the scroll track so it stays reachable no matter
+           how many tabs there are. -->
+      <Button variant="ghost" size="sm" icon="plus" class="sn-tab-add" tooltip="Add sheet" @click="addSheet" />
       <div class="sn-tabs-track">
         <div
           v-for="name in sheetNames"
@@ -630,8 +653,6 @@
             >+{{ peersBySubSheet.get(name).length - 3 }}</span>
           </span>
         </div>
-
-        <Button variant="ghost" size="sm" icon="plus" class="sn-tab-add" tooltip="Add sheet" @click="addSheet" />
       </div>
 
       <div v-if="selectionStats" class="sn-stats">
@@ -773,6 +794,23 @@
       :sheet-title="currentTitle"
       :owner-id="userEmail"
       @shares-changed="shareCount = $event"
+    />
+
+    <!-- AI Assist settings (in-app, never the desk form) -->
+    <AISettingsDialog v-model="aiSettingsOpen" @saved="onAiSettingsSaved" />
+
+    <!-- AI Assist "Ask" command bar -->
+    <AskBar
+      v-if="askOpen"
+      :busy="askBusy"
+      :selection-label="askSelectionLabel"
+      :error="askError"
+      :answer="askAnswer"
+      :pending="aiPending"
+      @submit="onAskSubmit"
+      @keep="onAskKeep"
+      @undo="onAskUndo"
+      @close="closeAskBar"
     />
 
     <!-- Find & Replace panel -->
@@ -1061,6 +1099,7 @@
 import { h, ref, reactive, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { createGrid }          from '../../canvas/index.js'
 import { colLabel, parseCellId, cellId } from '../../utils/cells.js'
+import { call } from '../../utils/api.js'
 import { parseNumberFmt, buildNumberFmt, applyNumberFmt } from '../../utils/format-number.js'
 import { getTextWrap } from '../../utils/text-wrap.js'
 import { computeFillDown, computeFillRight } from '../../engine/fill-series.js'
@@ -1069,6 +1108,7 @@ import { adjustFormula }                    from '../../engine/formula-adjust.js
 import { createSheet }         from '../../engine/sheet.js'
 import { createHistory }       from '../../engine/history.js'
 import { createFormatsEngine } from '../../engine/formats.js'
+import { formatScope }         from '../../engine/format-scope.js'
 import { createMergeEngine }   from '../../engine/merge.js'
 import { createClipboard }     from '../../engine/clipboard.js'
 import { createSortFilter }    from '../../engine/sortFilter.js'
@@ -1096,6 +1136,8 @@ import VersionPreviewBanner    from './VersionPreviewBanner.vue'
 import CellHistoryPopover      from './CellHistoryPopover.vue'
 import SplitTextPopover        from './SplitTextPopover.vue'
 import ShareDialog             from './ShareDialog.vue'
+import AISettingsDialog        from './AISettingsDialog.vue'
+import AskBar                  from './AskBar.vue'
 import PivotDialog             from './PivotDialog.vue'
 import ColorPicker             from './ColorPicker.vue'
 import { createPivotEngine } from '../../engine/pivot.js'
@@ -1275,12 +1317,16 @@ const history = createHistory({
   revertOp(op) {
     _applyCellMap(op.before, op.subSheet)
     if (op.beforeFormats)    _applyFormatMap(op.beforeFormats, op.subSheet)
+    if (op.beforeCols)       _applyAxisFormatMap('col', op.beforeCols, op.subSheet)
+    if (op.beforeRows)       _applyAxisFormatMap('row', op.beforeRows, op.subSheet)
     if (op.beforeValidation) _applyValidationMap(op.beforeValidation, op.subSheet)
     if (op.beforeMerge)      { merge.restore(op.beforeMerge); grid?.render?.() }
   },
   applyOp(op) {
     _applyCellMap(op.after, op.subSheet)
     if (op.afterFormats)    _applyFormatMap(op.afterFormats, op.subSheet)
+    if (op.afterCols)       _applyAxisFormatMap('col', op.afterCols, op.subSheet)
+    if (op.afterRows)       _applyAxisFormatMap('row', op.afterRows, op.subSheet)
     if (op.afterValidation) _applyValidationMap(op.afterValidation, op.subSheet)
     if (op.afterMerge)      { merge.restore(op.afterMerge); grid?.render?.() }
   },
@@ -1328,6 +1374,17 @@ function _applyFormatMap(map, sheetName) {
     const dv = sheet.getDisplayValue(id, sn)
     grid?.setCell(id, f.numberFormat ? applyNumberFmt(dv, f.numberFormat) : dv)
   }
+}
+
+// Apply a { colIdx|rowIdx: format|null } diff to the column or row format
+// layer (undo/redo of range-level formatting). Exact replacement, so undo
+// restores the captured layer precisely. One render covers the whole axis.
+function _applyAxisFormatMap(axis, map, sheetName) {
+  if (!map) return
+  const sn = sheetName || sheet.getCurrentSheet()
+  const replace = axis === 'col' ? formats.replaceCol : formats.replaceRow
+  for (const [k, fmt] of Object.entries(map)) replace(+k, fmt || {}, sn)
+  grid?.render?.()
 }
 
 function _applyValidationMap(map, sheetName) {
@@ -1620,7 +1677,136 @@ const fileDropdownOptions = computed(() => [
     { label: 'Import CSV',  icon: 'upload', onClick: () => csvInputRef.value?.click() },
     { label: 'Import XLSX', icon: 'upload', onClick: () => xlsxInputRef.value?.click() },
   ]},
+  // Only shown to admins — gated server-side via the boot flag so non-admins
+  // never see a settings entry they can't use.
+  ...(window.frappe?.boot?.ai_assist_can_configure
+    ? [{ group: 'AI', items: [
+        { label: 'AI settings', icon: 'cpu', onClick: () => { aiSettingsOpen.value = true } },
+      ]}]
+    : []),
 ])
+
+// ── AI Assist ─────────────────────────────────────────────────────────────────
+//
+// One primitive: select → ask in plain words → see it applied → Keep or Undo.
+// The backend returns a validated action plan; the model emits formulas, the
+// engine computes. Applying goes through the same pushOp + _queueOp path that
+// fill/paste use, so a single Undo reverts the whole batch and the change
+// joins the existing op-log / autosave / collab pipeline.
+
+const aiEnabled  = ref(!!window.frappe?.boot?.ai_assist_enabled)
+const askOpen    = ref(false)
+const askBusy    = ref(false)
+const askError   = ref('')
+const askAnswer  = ref('')
+const aiPending  = ref(null)              // null | { count }
+const askSelectionLabel = ref('')
+
+// After saving AI settings, refresh the boot flag + reactive ref in-place so
+// the "Ask" entry point appears/disappears without a full reload.
+function onAiSettingsSaved(s) {
+  // The keyless "mock"/"demo" model counts as configured too.
+  const isMock = ['mock', 'demo'].includes(String(s?.model || '').trim().toLowerCase())
+  const on = !!(s?.enabled && (s?.keyIsSet || isMock))
+  if (window.frappe?.boot) window.frappe.boot.ai_assist_enabled = on
+  aiEnabled.value = on
+}
+
+function openAskBar() {
+  askError.value = ''
+  askAnswer.value = ''
+  aiPending.value = null
+  askSelectionLabel.value = grid?.getActiveCell?.() || ''
+  askOpen.value = true
+}
+
+function closeAskBar() {
+  // Closing with a pending change is an implicit Keep — it's already applied
+  // and queued.
+  askOpen.value = false
+  askError.value = ''
+  askAnswer.value = ''
+  aiPending.value = null
+}
+
+async function onAskSubmit(promptText) {
+  askError.value = ''
+  askAnswer.value = ''
+  aiPending.value = null
+  askBusy.value = true
+  try {
+    const sel = grid?.getSelection?.() || { r0: 0, c0: 0, r1: 0, c1: 0 }
+    const selection = JSON.stringify({
+      sheet:  sheet.getCurrentSheet(),
+      r0: sel.r0, c0: sel.c0, r1: sel.r1, c1: sel.c1,
+      active: grid?.getActiveCell?.() || '',
+    })
+    const res = await call('sheets.api.ai_assist', {
+      name: props.id, prompt: promptText, selection,
+    })
+    const actions = Array.isArray(res?.actions) ? res.actions : []
+    const answers = actions.filter(a => a.type === 'answer')
+    if (answers.length) askAnswer.value = answers.map(a => a.text).join('\n\n')
+    const applied = _applyAiActions(actions)
+    if (applied > 0) aiPending.value = { count: applied }
+    else if (!answers.length) askAnswer.value = 'No changes suggested for that.'
+  } catch (e) {
+    askError.value = (e && e.message) ? String(e.message) : 'Something went wrong'
+  } finally {
+    askBusy.value = false
+  }
+}
+
+// Apply setCell actions as ONE undoable op (mirrors the fill/paste path).
+// Returns the number of cells written.
+function _applyAiActions(actions) {
+  const sn = sheet.getCurrentSheet()
+  const setCells = actions.filter(a => a.type === 'setCell')
+  if (!setCells.length) return 0
+
+  const before = {}
+  const after  = {}
+  for (const a of setCells) before[a.cell] = sheet.getCell(a.cell, sn) ?? ''
+  for (const a of setCells) {
+    sheet.setCell(a.cell, a.formula, sn)
+    after[a.cell] = a.formula
+  }
+  const refs = setCells.map(a => a.cell)
+
+  // Undo (op-based, like fill) + server sync (op-log on next save).
+  history.pushOp({ opType: 'ai_assist', subSheet: sn, cellRefs: refs, before, after })
+  _queueOp({
+    opType: 'ai_assist', subSheet: sn, cellRefs: refs, before, after,
+    summary: `AI: ${refs.length} cell${refs.length === 1 ? '' : 's'}`,
+  })
+
+  grid?.render()
+  refreshActiveFormat()
+  syncFlags()
+  isDirty.value = true
+  return refs.length
+}
+
+function onAskKeep() {
+  // Already applied + queued; just dismiss and close.
+  closeAskBar()
+}
+
+function onAskUndo() {
+  // Reverts the whole batch in one step (single op). Drop the still-queued
+  // op so a stale ai_assist entry isn't persisted on the next save.
+  undo()
+  _popLastOp('ai_assist')
+  aiPending.value = null
+}
+
+// Remove the most recently queued op of a given type (used when an AI change
+// is undone before it has been flushed to the server).
+function _popLastOp(opType) {
+  for (let i = _opQueue.length - 1; i >= 0; i--) {
+    if (_opQueue[i].opType === opType) { _opQueue.splice(i, 1); return }
+  }
+}
 
 const hAlignIcon = computed(() => {
   if (activeFormat.value?.align === 'center') return 'align-center'
@@ -1676,16 +1862,15 @@ onMounted(() => {
 // Collaboration — presence + sharing
 const shareOpen   = ref(false)
 const shareCount  = ref(0)   // explicit share count (excluding owner); updated by ShareDialog
+const aiSettingsOpen = ref(false)
 const { exportCSV, exportXLSX, exportPDF, importCSV, importXLSX } = useExportImport({
   getSheet:        () => sheet,
   getCurrentTitle: () => currentTitle.value,
   getGrid:         () => grid,
   queueOp:         _queueOp,
-  markEdited,
   repopulateGrid:  _repopulateGrid,
   syncFlags,
   isDirty,
-  history,
 })
 
 // Filter panel state.
@@ -1784,28 +1969,51 @@ function selectionIds() {
 // a 5×5 selection that's 25 reads instead of 25k. Worst case is Ctrl+A
 // (whole sheet) which is the same as before. RAF-coalesced so a drag-
 // extend that fires onSelect 1000× still computes stats once per frame.
+// Stats run ASYNC and chunked. Selecting to the end of a big sheet
+// (Cmd+Shift+Down → ~2M cells) used to compute Count/Sum/Avg synchronously in
+// one RAF, freezing the interaction for ~6s. The status bar is a non-critical
+// readout, so we yield every CHUNK_CELLS and bail the instant a newer
+// selection supersedes us — the selection paints immediately and the numbers
+// fill in a moment later.
+const _STATS_CHUNK_CELLS = 50000
 let _statsRAF = null
+let _statsToken = 0
 function computeSelectionStats() {
-  if (_statsRAF) return
+  _statsToken++
+  if (_statsRAF) cancelAnimationFrame(_statsRAF)
+  const token = _statsToken
   _statsRAF = requestAnimationFrame(() => {
     _statsRAF = null
-    _computeSelectionStatsNow()
+    _computeSelectionStatsAsync(token)
   })
 }
-function _computeSelectionStatsNow() {
+async function _computeSelectionStatsAsync(token) {
   if (!grid) return
   const { r0, c0, r1, c1 } = grid.getSelection()
   if ((r1 - r0 + 1) * (c1 - c0 + 1) <= 1) { selectionStats.value = null; return }
   const sn = sheet.getCurrentSheet()
-  let count = 0, numCount = 0, sum = 0
+  // Precompute column labels once instead of rebuilding each cell id's prefix
+  // 2M times (colLabel walks characters per call).
+  const labels = []
+  for (let c = c0; c <= c1; c++) labels.push(colLabel(c))
+  const rowWidth = c1 - c0 + 1
+  let count = 0, numCount = 0, sum = 0, since = 0
   for (let r = r0; r <= r1; r++) {
+    const rowSuffix = r + 1
     for (let c = c0; c <= c1; c++) {
-      const val = sheet.getCell(cellId(r, c), sn)
+      const val = sheet.getCell(labels[c - c0] + rowSuffix, sn)
       if (val !== '' && val != null) count++
       const n = parseFloat(val)
       if (!isNaN(n)) { numCount++; sum += n }
     }
+    since += rowWidth
+    if (since >= _STATS_CHUNK_CELLS) {
+      since = 0
+      await new Promise(res => setTimeout(res, 0))
+      if (token !== _statsToken) return   // a newer selection took over
+    }
   }
+  if (token !== _statsToken) return
   selectionStats.value = (count === 0 && numCount === 0) ? null : {
     count,
     sum:  numCount > 0 ? sum : null,
@@ -1828,6 +2036,7 @@ function formatStat(n) {
 function adjustDecimals(delta) {
   const ids = selectionIds()
   const sh = sheet.getCurrentSheet()
+  _recordFormatOp(ids, sh, () => {
   for (const id of ids) {
     const cur = formats.get(id, sh).numberFormat || ''
     let { type, variant, decimals } = parseNumberFmt(cur)
@@ -1844,7 +2053,7 @@ function adjustDecimals(delta) {
     const raw = sheet.getDisplayValue(id)
     grid?.setCell(id, applyNumberFmt(raw, next))
   }
-  history.push()   // post-mutate snapshot
+  })
   _syncNumberFormat(activeCell.value)
   syncFlags()
   isDirty.value = true
@@ -1854,7 +2063,15 @@ function adjustDecimals(delta) {
 // ── Composables ───────────────────────────────────────────────────────────────
 
 const { activeFormat, refreshActiveFormat, toggleFmt, setAlign, setValign, setColor, clearFormatting, getLastAction, recordAction } =
-  useToolbar({ sheet, formats, getGrid: () => grid, history, selectionIds, syncFlags, markDirty: () => { isDirty.value = true } })
+  useToolbar({ sheet, formats, getGrid: () => grid, history, selectionIds, getScope: _selectionScope, syncFlags, markDirty: () => { isDirty.value = true } })
+
+// Selection + grid bounds, so full-column / full-row / whole-sheet selections
+// format at the column/row level (one entry) instead of per cell. Null when
+// the grid isn't mounted yet → callers fall back to per-cell.
+function _selectionScope() {
+  if (!grid) return null
+  return { rect: grid.getSelection(), totalRows: grid.getTotalRows(), totalCols: grid.getTotalCols() }
+}
 
 // Toolbar dropdown configs that don't depend on pivot composable.
 function toggleSortFilter() { showSortFilter.value = !showSortFilter.value }
@@ -2028,7 +2245,7 @@ const renderVersion = ref(0)
 
 // Pivot integration — placed here because switchSheet/syncNames come from useSheetTabs above.
 const {
-  pivotDialogOpen, pivotInitialRange, pivotEditId, pivotEditConfig, pivotVersion,
+  pivotDialogOpen, pivotInitialRange, pivotEditId, pivotEditConfig, pivotVersion, pivotBuilding,
   activePivotConfig, pivotFabStyle, pivotHighlightStyle, pivotBannerMenuOptions,
   isPivotSheet, openPivotDialog, onPivotEdit, onPivotRefresh, onPivotDelete, onPivotConfirm,
   recomputePivotsForSheet, drillDownAt,
@@ -2044,7 +2261,7 @@ const {
 // sheet engine, so any cell edit propagates without explicit refresh calls.
 const {
   chartDialogOpen, chartInitialRange, chartEditId, chartEditConfig,
-  charts: chartList, selectedChartId, chartVersion,
+  charts: chartList, selectedChartId, chartVersion, chartDataVersion,
   openInsert: openChartDialog, openEdit: openChartEdit,
   onChartConfirm, onChartDelete, onChartMove, onChartResize, onChartRefresh,
   selectChart, getMatrix: getChartMatrix,
@@ -2890,9 +3107,60 @@ function _captureFormatsRange(rect, sheetName) {
 	for (let r = rect.r0; r <= rect.r1; r++) {
 		for (let c = rect.c0; c <= rect.c1; c++) {
 			const id = cellId(r, c)
-			out[id] = formats.get(id, sn) || null
+			out[id] = formats.getCellFormat(id, sn) || null
 		}
 	}
+	return out
+}
+
+// Record a cell-level format change to `ids` as an op DIFF instead of a full
+// history.push() snapshot (the snapshot deep-clones every cell — ~2s on a
+// 2M-cell sheet, ×50 in the undo stack). Captures cell-LEVEL formats so undo
+// restores the cell layer without baking column/row formats into cells.
+// Used by handlers that must touch cells directly (number formats bake the
+// display string per cell). `mutate` runs between the before/after captures.
+function _recordFormatOp(ids, sn, mutate) {
+	const beforeFormats = {}
+	for (const id of ids) beforeFormats[id] = formats.getCellFormat(id, sn) || null
+	mutate()
+	const afterFormats = {}
+	for (const id of ids) afterFormats[id] = formats.getCellFormat(id, sn) || null
+	history.pushOp({ opType: 'format', subSheet: sn, beforeFormats, afterFormats })
+}
+
+// Scope-aware variant for VISUAL formats (font, size, painted format) that the
+// renderer resolves live via the column<row<cell cascade. Full-column /
+// full-row selections write one layer entry instead of per-cell records, so
+// "set font on the whole sheet" stays tiny and instant. `ops` supplies the
+// three mutation variants: { cols, rows, cells }.
+function _recordScopedFormatOp(ops) {
+	const sn = sheet.getCurrentSheet()
+	const info = _selectionScope()
+	const scope = info ? formatScope(info.rect, info.totalRows, info.totalCols) : { kind: 'cells' }
+	const op = { opType: 'format', subSheet: sn }
+	if (scope.kind === 'cols') {
+		op.beforeCols = _captureAxis('col', scope.cols, sn)
+		ops.cols(scope.cols, sn)
+		op.afterCols = _captureAxis('col', scope.cols, sn)
+	} else if (scope.kind === 'rows') {
+		op.beforeRows = _captureAxis('row', scope.rows, sn)
+		ops.rows(scope.rows, sn)
+		op.afterRows = _captureAxis('row', scope.rows, sn)
+	} else {
+		const ids = selectionIds()
+		op.beforeFormats = {}
+		for (const id of ids) op.beforeFormats[id] = formats.getCellFormat(id, sn) || null
+		ops.cells(ids, sn)
+		op.afterFormats = {}
+		for (const id of ids) op.afterFormats[id] = formats.getCellFormat(id, sn) || null
+	}
+	history.pushOp(op)
+}
+
+function _captureAxis(axis, keys, sn) {
+	const get = axis === 'col' ? formats.getCol : formats.getRow
+	const out = {}
+	for (const k of keys) out[k] = get(k, sn) || null
 	return out
 }
 
@@ -3410,9 +3678,7 @@ function toggleFormatPainter() {
 
 function _applyPaintedFormat() {
   if (!isPaintingFormat.value || !_copiedFormat) return
-  const ids = selectionIds()
-  formats.applyToRange(ids, _copiedFormat, sheet.getCurrentSheet())
-  history.push()
+  _recordScopedFormatOp(_patchFmtOps(_copiedFormat))
   syncFlags()
   isDirty.value = true
   isPaintingFormat.value = false
@@ -3421,14 +3687,14 @@ function _applyPaintedFormat() {
 }
 
 function onNumberFormatChange(value) {
+  const sn  = sheet.getCurrentSheet()
   const ids = selectionIds()
-  formats.applyToRange(ids, { numberFormat: value }, sheet.getCurrentSheet())
+  _recordFormatOp(ids, sn, () => formats.applyToRange(ids, { numberFormat: value }, sn))
   for (const id of ids) {
     const raw = sheet.getDisplayValue(id)
     grid?.setCell(id, value ? applyNumberFmt(raw, value) : raw)
   }
   _syncNumberFormat(activeCell.value)
-  history.push()   // post-mutate
   syncFlags()
   isDirty.value = true
 }
@@ -4102,9 +4368,7 @@ function setFontFamily(keyOrStack) {
   // Accept either a short key ('inter', 'mono', …) from the toolbar select or
   // a raw CSS font-family stack (used by F4 replay). Normalize to the stack.
   const stack = FONT_FAMILY_STACK[keyOrStack] || keyOrStack
-  const ids = selectionIds()
-  formats.applyToRange(ids, { fontFamily: stack }, sheet.getCurrentSheet())
-  history.push()   // post-mutate
+  _recordScopedFormatOp(_patchFmtOps({ fontFamily: stack }))
   refreshActiveFormat()
   grid?.render()
   syncFlags()
@@ -4112,15 +4376,24 @@ function setFontFamily(keyOrStack) {
   isDirty.value = true
 }
 
-function adjustFontSize(delta) {
-  const ids = selectionIds()
-  const sh  = sheet.getCurrentSheet()
-  for (const id of ids) {
-    const cur = formats.get(id, sh).fontSize || 13
-    const next = Math.max(8, Math.min(72, cur + delta))
-    formats.applyToRange([id], { fontSize: next }, sh)
+// Mutation triple ({ cols, rows, cells }) that applies a visual format patch at
+// whichever scope the selection implies.
+function _patchFmtOps(patch) {
+  return {
+    cols:  (cols, sn) => formats.applyToColumns(cols, patch, sn),
+    rows:  (rows, sn) => formats.applyToRows(rows, patch, sn),
+    cells: (ids, sn)  => formats.applyToRange(ids, patch, sn),
   }
-  history.push()   // post-mutate
+}
+
+const _clampFont = v => Math.max(8, Math.min(72, v))
+
+function adjustFontSize(delta) {
+  _recordScopedFormatOp({
+    cols:  (cols, sn) => { for (const c of cols) formats.setCol(c, { fontSize: _clampFont((formats.getCol(c, sn).fontSize || 13) + delta) }, sn) },
+    rows:  (rows, sn) => { for (const r of rows) formats.setRow(r, { fontSize: _clampFont((formats.getRow(r, sn).fontSize || 13) + delta) }, sn) },
+    cells: (ids, sn)  => { for (const id of ids) formats.applyToRange([id], { fontSize: _clampFont((formats.get(id, sn).fontSize || 13) + delta) }, sn) },
+  })
   refreshActiveFormat()
   grid?.render()
   syncFlags()
@@ -4132,11 +4405,8 @@ function adjustFontSize(delta) {
 // to [8, 72] to match adjustFontSize. Called from the toolbar's font-size
 // input on commit (Enter / blur).
 function setFontSize(px) {
-  const n = Math.max(8, Math.min(72, parseInt(px, 10) || 13))
-  const ids = selectionIds()
-  const sh  = sheet.getCurrentSheet()
-  formats.applyToRange(ids, { fontSize: n }, sh)
-  history.push()   // post-mutate
+  const n = _clampFont(parseInt(px, 10) || 13)
+  _recordScopedFormatOp(_patchFmtOps({ fontSize: n }))
   refreshActiveFormat()
   grid?.render()
   syncFlags()
@@ -4502,32 +4772,37 @@ function _repopulateGrid() {
   const data    = sheet.getRawData()
   const sheetSn = sheet.getCurrentSheet()
   const show    = showFormulas.value
-  // Hot path on load for big sheets — 25k cells × parseCellId (regex match +
-  // {row,col} object allocation per call) was eating ~250 ms of GC + script
-  // time. Skip the regex entirely: walk the id's characters by char code to
-  // track maxCol/maxRow without allocating. The grid only needs the bounds
-  // to know whether to expand its default 26 × 1000 rectangle.
-  let maxCol = 0, maxRow = 0
-  for (const id of Object.keys(data)) {
-    // Inline cellId parse — letters → col index, then digits → row number.
-    // No regex, no result object.
-    let col = 0, row = 0, i = 0
-    const len = id.length
-    while (i < len) {
-      const c = id.charCodeAt(i)
-      if (c < 65 || c > 90) break
-      col = col * 26 + (c - 64)
-      i++
-    }
-    while (i < len) {
-      const c = id.charCodeAt(i)
-      if (c < 48 || c > 57) { row = 0; break }
-      row = row * 10 + (c - 48)
-      i++
-    }
-    if (col > 0 && row > 0) {
-      if (col - 1 > maxCol) maxCol = col - 1
-      if (row - 1 > maxRow) maxRow = row - 1
+  // Bounds: on load the engine hands us the sheet extent (derived cheaply from
+  // the packed payload), so we skip re-parsing every cell id here entirely —
+  // that scan was ~0.5s on a 2M-cell sheet. When bounds are unknown (post-edit
+  // repopulates) we fall back to the inline char-code parse below.
+  const bounds = sheet.consumeBounds?.(sheetSn)
+  let maxCol = bounds ? bounds.maxCol : 0
+  let maxRow = bounds ? bounds.maxRow : 0
+  // for-in avoids allocating a 2M-entry Object.keys array (alloc + GC was a
+  // measurable chunk of the cold-load task).
+  for (const id in data) {
+    if (!bounds) {
+      // Inline cellId parse — letters → col index, then digits → row number.
+      // No regex, no result object.
+      let col = 0, row = 0, i = 0
+      const len = id.length
+      while (i < len) {
+        const c = id.charCodeAt(i)
+        if (c < 65 || c > 90) break
+        col = col * 26 + (c - 64)
+        i++
+      }
+      while (i < len) {
+        const c = id.charCodeAt(i)
+        if (c < 48 || c > 57) { row = 0; break }
+        row = row * 10 + (c - 48)
+        i++
+      }
+      if (col > 0 && row > 0) {
+        if (col - 1 > maxCol) maxCol = col - 1
+        if (row - 1 > maxRow) maxRow = row - 1
+      }
     }
 
     if (show) {
@@ -4571,6 +4846,15 @@ function toggleShowFormulas() {
   pointer-events: none;   /* don't intercept clicks if it lingers a frame */
 }
 .sn-canvas-loading-spinner { color: var(--ink-gray-5); }
+.sn-pivot-building {
+  position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 14px; border-radius: 999px;
+  background: var(--surface-white); border: 1px solid var(--outline-gray-2);
+  box-shadow: 0 2px 8px rgba(0,0,0,.08);
+  font-size: 13px; color: var(--ink-gray-7);
+  z-index: 5; pointer-events: none;
+}
 
 /* ── Load-time error state ───────────────────────────────────────────────── */
 .sn-load-error {
@@ -4905,8 +5189,14 @@ function toggleShowFormulas() {
 /* Add-sheet button — pin its inner Button to the same 28px height as the
    tab labels and center within the track so the `+` sits on the same row
    axis as the tab text, not floating a couple of pixels above. */
-.sn-tab-add { flex-shrink:0; align-self:center; margin:0 4px; }
+/* Pinned at the start of the bottom bar (outside the scroll track) so it's
+   always reachable regardless of how many tabs there are. Full-height flex
+   box keeps the 28px button optically centered against the tab labels. */
+.sn-tab-add { flex-shrink:0; display:flex; align-items:center; align-self:center; margin:0 8px 0 12px; padding-right:8px; border-right:1px solid var(--outline-gray-2); }
 .sn-tab-add :deep(button) { height:28px; width:28px; padding:0; display:inline-flex; align-items:center; justify-content:center; }
+/* Feather `plus` sits ~1px high inside its box; pull the glyph down so it
+   lands on the same optical row as the tab labels' text. */
+.sn-tab-add :deep(svg) { display:block; position:relative; top:1px; }
 
 .sn-tab-drag-over::before {
   content:''; position:absolute; left:0; top:6px; bottom:6px;
