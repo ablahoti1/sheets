@@ -1315,6 +1315,8 @@ const history = createHistory({
   // so the full paste effect (values + formats + validation) round-trips
   // through undo/redo without the 320 ms snapshot tax.
   revertOp(op) {
+    // Structural op: undo of "add sheet" is just deleting the (empty) sheet.
+    if (op.opType === 'sheet_add') { _deleteSheet(op.name); return }
     _applyCellMap(op.before, op.subSheet)
     if (op.beforeFormats)    _applyFormatMap(op.beforeFormats, op.subSheet)
     if (op.beforeCols)       _applyAxisFormatMap('col', op.beforeCols, op.subSheet)
@@ -1323,6 +1325,8 @@ const history = createHistory({
     if (op.beforeMerge)      { merge.restore(op.beforeMerge); grid?.render?.() }
   },
   applyOp(op) {
+    // Structural op: redo of "add sheet" recreates the same empty sheet.
+    if (op.opType === 'sheet_add') { _addSheet(op.name); return }
     _applyCellMap(op.after, op.subSheet)
     if (op.afterFormats)    _applyFormatMap(op.afterFormats, op.subSheet)
     if (op.afterCols)       _applyAxisFormatMap('col', op.afterCols, op.subSheet)
@@ -2352,7 +2356,14 @@ const showSortFilter = computed({
   set(v) { v ? _createFilterOnSelection() : _removeFilter() },
 })
 
-function addSheet() { _addSheet(); history.push(); isDirty.value = true }
+// Adding a sheet used to push a full-workbook snapshot (history.push deep-clones
+// every cell of every sheet — ~2s on a large workbook). The new sheet is empty,
+// so undo/redo only needs its name: a cheap structural op instead of a snapshot.
+function addSheet() {
+  const name = _addSheet()
+  history.pushOp({ opType: 'sheet_add', subSheet: name, name })
+  isDirty.value = true
+}
 
 // ── Sheet-tab click — cross-sheet picker support ──────────────────────────────
 // When the user is mid-edit in the formula bar (`=…` content + bar has focus),
@@ -2906,6 +2917,12 @@ function _setupGridInstance() {
       formulaValue.value = sheet.getCell(id)
     },
     getFormat:    id => formats.get(id, sheet.getCurrentSheet()),
+    // Lazy render value source (Phase 1, off by default). Mirrors exactly what
+    // _repopulateGrid / onCellChanged bake into the grid's eager `data` cache,
+    // so the lazy and eager render paths produce identical pixels. When enabled
+    // (grid.setLazyValues(true)), the grid pulls this per visible cell instead
+    // of materialising every cell up front.
+    getDisplay:   _cellDisplay,
     getMergeInfo: id => merge.getMasterInfo(id, sheet.getCurrentSheet()),
     isSlave:      id => merge.isSlave(id, sheet.getCurrentSheet()),
     getMasterId:  id => merge.getMasterId(id, sheet.getCurrentSheet()),
@@ -2957,6 +2974,13 @@ function _setupGridInstance() {
       history.push()
       isDirty.value = true
     },
+    // Phase 1 cutover opt-in: render cell values via the lazy engine path
+    // (getDisplay) instead of the eager `data` cache. Off by default; flip
+    // per-browser via `?lazy=1` or localStorage['sheets:lazy']='1'. In Phase 1
+    // the eager populate still runs, so this verifies the lazy path renders
+    // identically on real sheets — the switch/load speed win lands once Phase 3
+    // stops populating `data` and makes this the default.
+    lazyValues: _lazyValuesOptIn(),
   })
   // Keep DOM overlays (filter chevrons) in sync with canvas scroll/resize/freeze.
   grid.onRender(() => { renderVersion.value++ })
@@ -4765,6 +4789,28 @@ const { pushEditOp: _pushEditOp } = useEditOps({
 })
 
 // ── Repopulate ────────────────────────────────────────────────────────────────
+
+// Per-browser opt-in for the lazy render path (Phase 1). Lets us verify the
+// lazy path renders identically on a real large sheet before flipping the
+// default and removing the eager cache.
+function _lazyValuesOptIn() {
+  try {
+    if (new URLSearchParams(window.location.search).get('lazy') === '1') return true
+    return window.localStorage?.getItem('sheets:lazy') === '1'
+  } catch { return false }
+}
+
+// Display string for a single cell — the formatted value the canvas paints.
+// Single source of truth shared by the eager repopulate (below), the per-cell
+// onCellChanged repaint, and the lazy render path (grid `getDisplay`), so all
+// three render identical pixels. showFormulas mode paints raw formula text.
+function _cellDisplay(id) {
+  if (showFormulas.value) return String(sheet.getCell(id) ?? '')
+  const sn  = sheet.getCurrentSheet()
+  const fmt = formats.get(id, sn)
+  const dv  = sheet.getDisplayValue(id)
+  return fmt.numberFormat ? applyNumberFmt(dv, fmt.numberFormat) : dv
+}
 
 function _repopulateGrid() {
   if (!grid) return

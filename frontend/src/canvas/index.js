@@ -9,11 +9,21 @@ import { CHIP, chipMetrics } from './chip-geometry.js'
 
 export { colLabel, cellId, parseCellId } from '../utils/cells.js'
 
-export function createGrid(canvas, { onSelect, onCommit, onInput, onCancel, getFormat, onFill, onBatchCommit, getMergeInfo, isSlave, getMasterId, getComment, getValidation, getCondFormat, getRightInset, onHyperlinkClick, onDropdownClick, onPivotDrill, onResizeEnd, getSheetNames, getCurrentSheet, getEditingHomeSheet } = {}) {
+export function createGrid(canvas, { onSelect, onCommit, onInput, onCancel, getFormat, onFill, onBatchCommit, getMergeInfo, isSlave, getMasterId, getComment, getValidation, getCondFormat, getRightInset, onHyperlinkClick, onDropdownClick, onPivotDrill, onResizeEnd, getSheetNames, getCurrentSheet, getEditingHomeSheet, getDisplay, lazyValues = false } = {}) {
   const ctx = canvas.getContext('2d')
   const dpr = window.devicePixelRatio || 1
 
   const data = {}
+
+  // Value source for rendering. Legacy/eager path reads the grid's own `data`
+  // cache (populated wholesale by the host's repopulate). Lazy path pulls each
+  // visible cell's display string from the host's `getDisplay` on demand, so
+  // switch/load cost no longer scales with total cell count. Phase 1 keeps both
+  // wired and `data` populated so the two paths render identically; flipping
+  // `_lazyValues` is the cutover. `getValue` is the single read seam.
+  let _lazyValues = lazyValues && typeof getDisplay === 'function'
+  const getValue = id => _lazyValues ? getDisplay(id) : data[id]
+  function setLazyValues(on) { _lazyValues = !!on && typeof getDisplay === 'function'; render() }
   const colW = {}
   const rowH = {}
 
@@ -89,7 +99,7 @@ export function createGrid(canvas, { onSelect, onCommit, onInput, onCancel, getF
   }
 
   function render() {
-    renderer.render({ cssW, cssH, data, sel, selEnd, selMode, editing, getFormat, freeze, getMergeInfo, isSlave, getComment, getValidation, getCondFormat, getRightInset, getDiffFor: _diffCells ? _getDiffFor : null, marchAnts, marchPhase, pickerRect, zoom: _zoom })
+    renderer.render({ cssW, cssH, getValue, sel, selEnd, selMode, editing, getFormat, freeze, getMergeInfo, isSlave, getComment, getValidation, getCondFormat, getRightInset, getDiffFor: _diffCells ? _getDiffFor : null, marchAnts, marchPhase, pickerRect, zoom: _zoom })
     for (const cb of _renderListeners) cb()
   }
 
@@ -1600,6 +1610,7 @@ export function createGrid(canvas, { onSelect, onCommit, onInput, onCancel, getF
     expandCols, getTotalCols,
     setZoom, getZoom,
     viewSnapshot, viewRestore,
+    setLazyValues,
     destroy,
   }
 }
