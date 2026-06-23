@@ -2923,6 +2923,10 @@ function _setupGridInstance() {
     // (grid.setLazyValues(true)), the grid pulls this per visible cell instead
     // of materialising every cell up front.
     getDisplay:   _cellDisplay,
+    // Non-empty cell ids for the current sheet — the lazy path's source for
+    // cold-path scans (Cmd+A extent, autofit) that used to walk the grid's
+    // own `data` keys.
+    getCellIds:   () => Object.keys(sheet.getRawData()),
     getMergeInfo: id => merge.getMasterInfo(id, sheet.getCurrentSheet()),
     isSlave:      id => merge.isSlave(id, sheet.getCurrentSheet()),
     getMasterId:  id => merge.getMasterId(id, sheet.getCurrentSheet()),
@@ -2974,13 +2978,9 @@ function _setupGridInstance() {
       history.push()
       isDirty.value = true
     },
-    // Phase 1 cutover opt-in: render cell values via the lazy engine path
-    // (getDisplay) instead of the eager `data` cache. Off by default; flip
-    // per-browser via `?lazy=1` or localStorage['sheets:lazy']='1'. In Phase 1
-    // the eager populate still runs, so this verifies the lazy path renders
-    // identically on real sheets — the switch/load speed win lands once Phase 3
-    // stops populating `data` and makes this the default.
-    lazyValues: _lazyValuesOptIn(),
+    // Lazy render is the default; eager `data` cache stays as an opt-out
+    // fallback (`?lazy=0`). See _lazyValuesEnabled.
+    lazyValues: _lazyValuesEnabled(),
   })
   // Keep DOM overlays (filter chevrons) in sync with canvas scroll/resize/freeze.
   grid.onRender(() => { renderVersion.value++ })
@@ -4790,14 +4790,17 @@ const { pushEditOp: _pushEditOp } = useEditOps({
 
 // ── Repopulate ────────────────────────────────────────────────────────────────
 
-// Per-browser opt-in for the lazy render path (Phase 1). Lets us verify the
-// lazy path renders identically on a real large sheet before flipping the
-// default and removing the eager cache.
-function _lazyValuesOptIn() {
+// Lazy render path is the default (Phase 3 cutover): the grid pulls each
+// visible cell's display string on demand, so switch/load cost no longer scales
+// with cell count. The eager `data`-cache path is kept intact as a fallback —
+// disable lazy per-browser with `?lazy=0` or localStorage['sheets:lazy']='0' if
+// a rendering regression turns up on a real sheet.
+function _lazyValuesEnabled() {
   try {
-    if (new URLSearchParams(window.location.search).get('lazy') === '1') return true
-    return window.localStorage?.getItem('sheets:lazy') === '1'
-  } catch { return false }
+    if (new URLSearchParams(window.location.search).get('lazy') === '0') return false
+    if (window.localStorage?.getItem('sheets:lazy') === '0') return false
+  } catch { /* no window/storage — fall through to default */ }
+  return true
 }
 
 // Display string for a single cell — the formatted value the canvas paints.
@@ -4812,11 +4815,50 @@ function _cellDisplay(id) {
   return fmt.numberFormat ? applyNumberFmt(dv, fmt.numberFormat) : dv
 }
 
+// Grow the grid's scrollable area to cover a sheet's used extent so the user
+// can scroll to their data. Shared by the eager and lazy repopulate paths.
+function _expandGridTo(maxCol, maxRow) {
+  const neededCols = maxCol + 1
+  const neededRows = maxRow + 1
+  if (grid.getTotalCols && grid.expandCols && neededCols > grid.getTotalCols())
+    grid.expandCols(neededCols - grid.getTotalCols())
+  if (grid.getTotalRows && grid.expandRows && neededRows > grid.getTotalRows())
+    grid.expandRows(neededRows - grid.getTotalRows())
+}
+
+// Sheet extent via a cheap char-code id-parse over the raw cell ids — no
+// formula eval or format work. The lazy path's fallback when the engine has
+// no load-time bounds hint (post-edit / never-visited sheet).
+function _scanBounds(sheetSn) {
+  const data = sheet.getRawData(sheetSn)
+  let maxCol = 0, maxRow = 0
+  for (const id in data) {
+    let col = 0, row = 0, i = 0
+    const len = id.length
+    while (i < len) { const c = id.charCodeAt(i); if (c < 65 || c > 90) break; col = col * 26 + (c - 64); i++ }
+    while (i < len) { const c = id.charCodeAt(i); if (c < 48 || c > 57) { row = 0; break } row = row * 10 + (c - 48); i++ }
+    if (col > 0 && row > 0) { if (col - 1 > maxCol) maxCol = col - 1; if (row - 1 > maxRow) maxRow = row - 1 }
+  }
+  return { maxCol, maxRow }
+}
+
 function _repopulateGrid() {
   if (!grid) return
+  const sheetSn = sheet.getCurrentSheet()
+
+  // Lazy path: the grid pulls each visible cell's display string on demand, so
+  // we materialise nothing here — switch/load no longer scale with cell count.
+  // Still size the grid to the sheet extent (cheap id-parse, or the engine's
+  // free load-time hint) and repaint.
+  if (grid.isLazyValues?.()) {
+    const b = sheet.consumeBounds?.(sheetSn) || _scanBounds(sheetSn)
+    _expandGridTo(b.maxCol, b.maxRow)
+    grid.render?.()
+    return
+  }
+
   grid.clearAll()
   const data    = sheet.getRawData()
-  const sheetSn = sheet.getCurrentSheet()
   const show    = showFormulas.value
   // Bounds: on load the engine hands us the sheet extent (derived cheaply from
   // the packed payload), so we skip re-parsing every cell id here entirely —
@@ -4859,12 +4901,7 @@ function _repopulateGrid() {
     const displayValue = sheet.getDisplayValue(id)
     grid.setCell(id, fmt.numberFormat ? applyNumberFmt(displayValue, fmt.numberFormat) : displayValue)
   }
-  const neededCols = maxCol + 1
-  const neededRows = maxRow + 1
-  if (grid.getTotalCols && grid.expandCols && neededCols > grid.getTotalCols())
-    grid.expandCols(neededCols - grid.getTotalCols())
-  if (grid.getTotalRows && grid.expandRows && neededRows > grid.getTotalRows())
-    grid.expandRows(neededRows - grid.getTotalRows())
+  _expandGridTo(maxCol, maxRow)
 }
 
 function toggleShowFormulas() {
