@@ -449,7 +449,7 @@
           class="sn-filter-btn"
           :class="{ active: filterConfig[col.col] }"
           :style="col.style"
-          @click="openFilterPanel(col.col, $event)"
+          @click="openFilterPanel(col.col)"
         >
           <FeatherIcon name="chevron-down" class="sn-filter-btn-icon" />
         </button>
@@ -491,7 +491,7 @@
 
       <!-- Inline filter panel — sort + condition + Google-Sheets-style
            "Filter by values" checklist with search and Select all/Clear. -->
-      <div v-if="filterPanel.open" class="sn-filter-panel" :style="filterPanel.style">
+      <div v-if="filterPanel.open" class="sn-filter-panel" :style="filterPanelStyle">
         <div class="sn-fp-title">Column {{ colLabel(filterPanel.col) }}</div>
         <div class="sn-fp-row">
           <Button class="sn-fp-grow" size="sm" iconLeft="arrow-up"   label="A → Z" tooltip="Sort ascending"  @click="doSort(filterPanel.col, 'asc')" />
@@ -1886,7 +1886,7 @@ const { exportCSV, exportXLSX, exportPDF, importCSV, importXLSX } = useExportImp
 //   - allValues: distinct displayed values in the column's data range, cached
 //     while the panel is open so we don't recompute on every keystroke.
 const filterPanel = reactive({
-  open: false, col: 0, style: {},
+  open: false, col: 0,
   mode: 'values',
   operator: 'contains', value: '',
   valueSet: new Set(),
@@ -2489,6 +2489,26 @@ const visibleFilterCols = computed(() => {
       height: BTN + 'px',
     },
   }))
+})
+
+// Live position for the open filter panel. Recomputed on every canvas render
+// (renderVersion) so the panel tracks its column as the grid scrolls, anchored
+// to the column's chevron just like visibleFilterCols. Returns display:none when
+// the column scrolls out of the visible header range so the panel hides instead
+// of floating over unrelated columns; it reappears when scrolled back into view.
+const filterPanelStyle = computed(() => {
+  renderVersion.value
+  if (!filterPanel.open || !grid || !filterRange.value) return { display: 'none' }
+  const { r0 } = filterRange.value
+  const colRect = grid.getColumnHeaderRects().find(({ c }) => c === filterPanel.col)
+  const rowRect = grid.getRowRect(r0)
+  if (!colRect || !rowRect) return { display: 'none' }
+  const BTN = 16
+  const wrapW = gridWrapRef.value?.getBoundingClientRect().width ?? Infinity
+  return {
+    top:  (rowRect.y + rowRect.height + 2) + 'px',
+    left: clampFilterLeft(colRect.x + colRect.width - BTN - 3, wrapW) + 'px',
+  }
 })
 
 // Per-sub-sheet peer dots — small colored circles next to each tab label
@@ -4175,9 +4195,7 @@ function _removeFilter() {
   isDirty.value = true
 }
 
-function openFilterPanel(colIdx, event) {
-  const rect = event.target.getBoundingClientRect()
-  const wrapRect = gridWrapRef.value.getBoundingClientRect()
+function openFilterPanel(colIdx) {
   const sn  = sheet.getCurrentSheet()
   const cfg = sortFilter.getFilterConfig(sn)
   const existing = cfg[colIdx]
@@ -4204,11 +4222,18 @@ function openFilterPanel(colIdx, event) {
     filterPanel.value     = ''
     filterPanel.valueSet  = new Set(allValues)
   }
-  filterPanel.style = {
-    top:  (rect.bottom - wrapRect.top + 2) + 'px',
-    left: (rect.left   - wrapRect.left)    + 'px',
-  }
   filterPanel.open = true
+}
+
+// The panel renders at FILTER_PANEL_W px outer width (260 content + 24 padding +
+// 2 border, content-box). clampFilterLeft keeps its full width inside the grid
+// wrap so chevrons on right-edge columns don't push the Apply/Close buttons
+// off-screen. Live positioning lives in the filterPanelStyle computed.
+const FILTER_PANEL_W = 286
+function clampFilterLeft(left, wrapWidth) {
+  const GAP = 6
+  const maxLeft = wrapWidth - FILTER_PANEL_W - GAP
+  return Math.max(GAP, Math.min(left, maxLeft))
 }
 
 // Alt+↓ on a canvas cell opens the filter panel for that cell's column. Forces
@@ -4231,10 +4256,8 @@ function openQuickFilterForActive() {
     filterPanel.col      = p.col
     filterPanel.operator = cfg[p.col]?.operator || 'contains'
     filterPanel.value    = cfg[p.col]?.value    || ''
-    filterPanel.style    = {
-      top:  (rowRect.y + rowRect.height + 2) + 'px',
-      left: (colRect.x + colRect.width - 232 - 4) + 'px',  // 232px panel width
-    }
+    // Position is derived live by the filterPanelStyle computed; we only need
+    // the column visible here so the panel has a valid anchor on open.
   })
 }
 
